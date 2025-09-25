@@ -259,5 +259,114 @@ with tabs[3]:
             st.exception(e)
 
 with tabs[4]:
-    st.subheader("Matrix & Portfolio")
-    st.info("Coming soon: batch scenarios & portfolio view.")
+    st.subheader("Project Design Advisor")
+
+    st.write("""
+    Upload your energy profile and the tool will determine:
+    - Whether a battery is required to keep the plant above minimum load,
+    - The **optimal battery size** (if needed),
+    - Methanol production and revenues.
+    """)
+
+    params = sidebar()
+
+    if params.uploaded is None:
+        st.info("Upload your 15-min energy price profile in the sidebar to continue.")
+        st.stop()
+
+    # Parse uploaded file
+    file_bytes = params.uploaded.getvalue()
+    filename = params.uploaded.name
+    try:
+        df_prices = _parse_prices_cached(file_bytes, filename)
+    except Exception as e:
+        st.exception(e)
+        st.stop()
+
+    results_summary = []
+
+    # Search battery size automatically
+    batt_size = 0
+    step = 10    # increment (MWh)
+    max_size = 1000  # hard cap
+    found_feasible = False
+
+    while batt_size <= max_size:
+        try:
+            res, kpis = optimizer.run_dispatch_with_battery(
+                df=df_prices,
+                plant_capacity_mw=params.PLANT_CAP_MW,
+                min_load_pct=params.MIN_LOAD_PCT,
+                max_load_pct=params.MAX_LOAD_PCT,
+                break_even_eur_per_mwh=params.BREAK_EVEN_EUR_MWH,
+                ramp_limit_mw_per_step=(params.RAMP_LIMIT_MW if params.RAMP_LIMIT_MW > 0 else None),
+                always_on=params.ALWAYS_ON,
+                dispatch_threshold_eur_per_mwh=params.BREAK_EVEN_EUR_MWH,
+                mwh_per_ton=(params.MWH_PER_TON if params.MWH_PER_TON > 0 else None),
+                methanol_price_eur_per_ton=params.MEOH_PRICE,
+                co2_price_eur_per_ton=params.CO2_PRICE,
+                co2_t_per_ton_meoh=params.CO2_INTENSITY,
+                maintenance_pct_of_revenue=params.MAINT_PCT / 100.0,
+                sga_pct_of_revenue=params.SGA_PCT / 100.0,
+                insurance_pct_of_revenue=params.INS_PCT / 100.0,
+                target_margin_fraction=float(params.TARGET_MARGIN_PCT) / 100.0,
+                margin_method="break_even",
+                batt_energy_mwh=batt_size,
+                batt_power_mw=params.BATTERY_POWER_MW,
+                eff_chg=params.BATTERY_EFF_CHG,
+                eff_dis=params.BATTERY_EFF_DIS,
+                soc_init_pct=params.SOC_INIT_PCT,
+                soc_min_pct=params.SOC_MIN_PCT,
+                soc_max_pct=params.SOC_MAX_PCT,
+                deadband_frac=params.DEADBAND_FRAC,
+            )
+
+            # Check feasibility
+            feasible = True
+            if "dispatch_mw" in res.columns:
+                min_load_mw = params.PLANT_CAP_MW * (params.MIN_LOAD_PCT / 100.0)
+                if (res["dispatch_mw"] < min_load_mw - 1e-6).any():
+                    feasible = False
+
+            methanol_tons = None
+            if "dispatch_mw" in res.columns and params.MWH_PER_TON > 0:
+                methanol_tons = res["dispatch_mw"].sum() / params.MWH_PER_TON
+
+            revenue = kpis.get("revenue", float("nan")) if isinstance(kpis, dict) else float("nan")
+
+            results_summary.append({
+                "Battery (MWh)": batt_size,
+                "Feasible?": feasible,
+                "Methanol (t)": methanol_tons,
+                "Revenue (M€)": revenue / 1e6 if revenue == revenue else None,
+            })
+
+            if feasible:
+                found_feasible = True
+                # Stop increasing once we find the first feasible size
+                break
+
+        except Exception as e:
+            st.warning(f"Error at battery size {batt_size} MWh: {e}")
+
+        batt_size += step
+
+    if not results_summary:
+        st.error("No valid scenarios could be computed.")
+        st.stop()
+
+    df_summary = pd.DataFrame(results_summary)
+
+    st.subheader("Scenario Results")
+    st.dataframe(df_summary, use_container_width=True)
+
+    if found_feasible:
+        optimal = results_summary[-1]
+        st.success(f"""
+        ✅ **Recommended configuration:**
+        - Battery: {optimal['Battery (MWh)']} MWh
+        - Methanol: {optimal['Methanol (t)']:.0f} tons
+        - Revenue: €{(optimal['Revenue (M€)'] or 0)*1e6:,.0f}/year
+        """)
+    else:
+        st.error("❌ No feasible configuration found (plant cannot meet min load even with up to 1,000 MWh battery).")
