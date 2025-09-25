@@ -11,20 +11,19 @@ from core.tolling import TollingParams, price_cap_tolling, build_tolling_timelin
 
 st.set_page_config(page_title="Dispatch Optimizer", layout="wide")
 
-# -------------------------- Header --------------------------
-ui.display_logo(constants.UI.get("logo", "logo.png"))
+# Header
+ui.display_logo(constants.UI.get("logo","logo.png"))
 st.title("Quarter-hour Dispatch Optimizer (Profit-Max)")
 show_help_panel()
 
-# ---------------------------- Tabs ---------------------------
 tabs = st.tabs(["Inputs & Run", "Results", "Charts", "Downloads", "Matrix & Portfolio"])
 
-# ======================== Inputs & Run ========================
+# ---------------------- Inputs & Run ----------------------
 with tabs[0]:
     params = ui.sidebar()
     st.info("Upload your 15-min price file and click **Run Optimization**. CSV/Excel autodetected.")
 
-    # Optional benchmark (ignored if Tolling enabled)
+    # Apply optional benchmark (Product mode only)
     break_even = params.break_even
     if (not params.TOLLING_ENABLED) and params.use_bench_as_break_even:
         break_even = economics.benchmark_power_price(
@@ -36,7 +35,7 @@ with tabs[0]:
             co2_t_per_t=float(params.co2_intensity),
         )
 
-    # Dispatch threshold (price cap)
+    # Dispatch threshold
     if params.TOLLING_ENABLED:
         price_cap = price_cap_tolling(
             target_margin_pct=float(params.TARGET_MARGIN_PCT),
@@ -65,7 +64,7 @@ with tabs[0]:
         st.error(err)
         st.stop()
 
-    # Battery params
+    # Battery params (include hybrid options)
     bat = BatteryParams(
         enabled=bool(params.bat_en),
         e_mwh=float(params.e_mwh),
@@ -78,6 +77,8 @@ with tabs[0]:
         price_low=float(params.price_low),
         price_high=float(params.price_high),
         degradation_eur_per_mwh=float(params.degr),
+        prefer_self_supply=bool(params.prefer_self_supply),
+        dispatch_threshold_eur_per_mwh=float(price_cap),
     )
 
     # Tolling params
@@ -92,7 +93,6 @@ with tabs[0]:
         ins_pct=float(params.ins_pct),
     )
 
-    # Run
     if params.run:
         if params.uploaded is None:
             st.error("Please upload a CSV/Excel with timestamp and price.")
@@ -124,14 +124,13 @@ with tabs[0]:
             battery_params=bat
         )
 
-        # Tolling timeline/KPIs (if enabled)
+        # Tolling KPIs/timeline
         toll_timeline, toll_kpis = build_tolling_timeline_and_kpis(
             plant_results=plant_res,
             toll=toll,
-            contracted_mw_cap=min(params.contracted_mw, params.plant_capacity_mw),
+            contracted_mw_cap=min(getattr(params, "contracted_mw", 0.0), params.plant_capacity_mw),
         )
 
-        # Save context for other tabs (incl. matrix snapshots)
         st.session_state["last_df_prices"] = df
         st.session_state["last_results"] = plant_res
         st.session_state["last_kpis"] = plant_kpis
@@ -140,8 +139,6 @@ with tabs[0]:
         st.session_state["last_toll_df"] = toll_timeline
         st.session_state["last_toll_kpis"] = toll_kpis
         st.session_state["last_method"] = method_tag
-
-        # Snapshot of key inputs for matrix reuse
         st.session_state["last_params_snapshot"] = {
             "break_even": float(break_even),
             "MARGIN_METHOD": str(params.MARGIN_METHOD),
@@ -157,17 +154,15 @@ with tabs[0]:
             "ramp_limit": float(params.ramp_limit),
             "always_on": bool(params.always_on),
             "use_bench_as_break_even": bool(params.use_bench_as_break_even),
-            # Tolling
             "tolling_enabled": bool(params.TOLLING_ENABLED),
-            "contracted_mw": float(params.contracted_mw),
-            "toll_cap_fee": float(params.toll_cap_fee),
-            "toll_var_fee": float(params.toll_var_fee),
-            "toll_other_mwh": float(params.toll_other_mwh),
+            "contracted_mw": float(getattr(params, "contracted_mw", 0.0)),
+            "toll_cap_fee": float(getattr(params, "toll_cap_fee", 0.0)),
+            "toll_var_fee": float(getattr(params, "toll_var_fee", 0.0)),
+            "toll_other_mwh": float(getattr(params, "toll_other_mwh", 0.0)),
         }
-
         st.success("Optimization complete. See Results / Charts / Downloads / Matrix tabs.")
 
-# ========================= Results ==========================
+# ------------------------- Results -------------------------
 with tabs[1]:
     res = st.session_state.get("last_results")
     kpis = st.session_state.get("last_kpis", {})
@@ -175,7 +170,6 @@ with tabs[1]:
     bat_kpis = st.session_state.get("last_bat_kpis", {})
     toll_df = st.session_state.get("last_toll_df", pd.DataFrame())
     toll_kpis = st.session_state.get("last_toll_kpis", {"tolling_enabled": False})
-    method_tag = st.session_state.get("last_method", "")
 
     if res is None:
         st.info("No results yet. Run an optimization first.")
@@ -188,7 +182,7 @@ with tabs[1]:
             st.dataframe(pd.DataFrame([toll_kpis]))
 
         if bat_kpis.get("battery_enabled"):
-            st.subheader("KPIs — Battery")
+            st.subheader("KPIs — Battery (hybrid)")
             st.dataframe(pd.DataFrame([bat_kpis]))
 
         # Combined project profit
@@ -198,7 +192,9 @@ with tabs[1]:
         elif plant_profit is None:
             plant_profit = kpis.get("total_profit_proxy_eur", 0.0)
 
-        total_project_profit = float(plant_profit or 0.0) + float(bat_kpis.get("battery_profit_eur", 0.0))
+        # Battery profit includes trading + savings
+        bat_profit = float(bat_kpis.get("battery_profit_eur", 0.0))
+        total_project_profit = float(plant_profit or 0.0) + bat_profit
         st.metric("Total Project Profit (Plant + Battery)", f"€{total_project_profit:,.0f}")
 
         st.subheader("Dispatch (first 200 rows)")
@@ -208,7 +204,7 @@ with tabs[1]:
             st.subheader("Tolling timeline (first 200 rows)")
             st.dataframe(toll_df.head(200))
 
-# ========================== Charts ==========================
+# -------------------------- Charts --------------------------
 with tabs[2]:
     res = st.session_state.get("last_results")
     bat_df = st.session_state.get("last_bat_df", pd.DataFrame())
@@ -222,29 +218,25 @@ with tabs[2]:
             tmp["timestamp"] = pd.to_datetime(tmp["timestamp"])
         price_col = "price_eur_per_mwh"
 
-        # Price vs Dispatch
         if "dispatch_mw" in tmp.columns:
             st.plotly_chart(px.line(tmp, x="timestamp", y=[price_col, "dispatch_mw"], title="Price vs Dispatch (MW)"), use_container_width=True)
         elif "mw" in tmp.columns:
             st.plotly_chart(px.line(tmp, x="timestamp", y=[price_col, "mw"], title="Price vs Dispatch (MW)"), use_container_width=True)
 
-        # Daily profit (product mode)
         if "true_profit_eur" in tmp.columns:
             daily = tmp.groupby(tmp["timestamp"].dt.date)["true_profit_eur"].sum().reset_index(name="profit")
             st.plotly_chart(px.bar(daily, x="timestamp", y="profit", title="Daily Profit (product mode)"), use_container_width=True)
 
-        # Daily profit (tolling)
         if not toll_df.empty:
             daily_toll = toll_df.copy()
             daily_toll["date"] = pd.to_datetime(daily_toll["timestamp"]).dt.date
             dsum = daily_toll.groupby("date")["toll_profit_eur"].sum().reset_index()
             st.plotly_chart(px.bar(dsum, x="date", y="toll_profit_eur", title="Daily Profit (tolling mode)"), use_container_width=True)
 
-        # Battery SOC
         if not bat_df.empty and "bat_soc" in bat_df.columns:
             st.plotly_chart(px.line(bat_df, x="timestamp", y="bat_soc", title="Battery SOC"), use_container_width=True)
 
-# ======================== Downloads =========================
+# ------------------------ Downloads ------------------------
 with tabs[3]:
     res = st.session_state.get("last_results")
     bat_df = st.session_state.get("last_bat_df", pd.DataFrame())
@@ -271,7 +263,7 @@ with tabs[3]:
                                mime="text/csv",
                                use_container_width=True)
 
-# =================== Matrix & Portfolio =====================
+# ------------------- Matrix & Portfolio --------------------
 with tabs[4]:
     st.subheader("Scenario matrix (sensitivity)")
     st.caption("Uses the last uploaded price series & inputs. Run a base case first.")
@@ -283,10 +275,8 @@ with tabs[4]:
         st.info("Run a base case first in 'Inputs & Run' to seed the matrix.")
         st.stop()
 
-    # Two sub-tabs for matrices
     mtab_product, mtab_toll = st.tabs(["🧪 Product matrix", "🧾 Tolling matrix"])
 
-    # ---------------------- PRODUCT MATRIX ----------------------
     with mtab_product:
         if snap.get("tolling_enabled", False):
             st.warning("Product matrix uses PRODUCT mode. Disable Tolling and run a base case, then come back.")
@@ -311,7 +301,6 @@ with tabs[4]:
                 rows = []
                 for p_meoh in meoh_vals:
                     for m_pct in margin_vals:
-                        # recompute BE if benchmark was used; else keep snapshot BE
                         if snap.get("use_bench_as_break_even", False):
                             be_local = economics.benchmark_power_price(
                                 p_methanol=float(p_meoh),
@@ -339,7 +328,7 @@ with tabs[4]:
                         if err_local:
                             continue
 
-                        plant_res, plant_kpis, _, _ = optimizer.run_dispatch(
+                        _, plant_kpis, _, _ = optimizer.run_dispatch(
                             df=last_df,
                             plant_capacity_mw=float(snap["plant_capacity_mw"]),
                             min_load_pct=float(snap["min_load_pct"]),
@@ -370,12 +359,6 @@ with tabs[4]:
                             "target_margin_pct": m_pct,
                             "break_even_eur_per_mwh": be_local,
                             "dispatch_threshold_eur_per_mwh": cap_local,
-                            "total_energy_mwh": plant_kpis.get("total_energy_mwh"),
-                            "total_tons": plant_kpis.get("total_tons"),
-                            "total_revenue_eur": plant_kpis.get("total_methanol_revenue_eur"),
-                            "total_power_cost_eur": plant_kpis.get("total_power_cost_eur"),
-                            "total_co2_cost_eur": plant_kpis.get("total_co2_cost_eur"),
-                            "total_opex_misc_eur": plant_kpis.get("total_opex_misc_eur"),
                             "plant_profit_eur": plant_profit,
                         })
 
@@ -383,8 +366,6 @@ with tabs[4]:
                     st.warning("No matrix points computed (check inputs).")
                 else:
                     mat_df = pd.DataFrame(rows)
-                    st.session_state["last_matrix_df_product"] = mat_df
-
                     st.subheader("Product matrix — Results")
                     st.dataframe(mat_df)
 
@@ -405,7 +386,6 @@ with tabs[4]:
                                        mime="text/csv",
                                        use_container_width=True)
 
-    # ----------------------- TOLLING MATRIX -----------------------
     with mtab_toll:
         if not snap.get("tolling_enabled", False):
             st.warning("Tolling matrix uses TOLLING mode. Enable Tolling and run a base case, then come back.")
@@ -421,8 +401,8 @@ with tabs[4]:
                 margin_max_t = st.number_input("Margin max (%)", value=50.0)
                 margin_step_t = st.number_input("Margin step", value=10.0)
 
-            cap_fee_fixed = st.number_input("Capacity fee (€/MW-month) — fixed for sweep", value=float(snap.get("toll_cap_fee", 0.0)))
-            contracted_mw = st.number_input("Contracted MW — fixed for sweep",
+            cap_fee_fixed = st.number_input("Capacity fee (€/MW-month) — fixed", value=float(snap.get("toll_cap_fee", 0.0)))
+            contracted_mw = st.number_input("Contracted MW — fixed",
                                             value=float(snap.get("contracted_mw", 0.0)),
                                             min_value=0.0,
                                             max_value=float(snap.get("plant_capacity_mw", 1e6)),
@@ -438,7 +418,6 @@ with tabs[4]:
                 rows_t = []
                 for vfee in var_vals:
                     for m_pct in margin_vals_t:
-                        # Tolling price cap for dispatch
                         cap_local = price_cap_tolling(
                             target_margin_pct=float(m_pct),
                             variable_fee_eur_per_mwh=float(vfee),
@@ -448,17 +427,17 @@ with tabs[4]:
                             other_var_cost_eur_per_mwh=float(other_var_cost),
                         )
 
-                        plant_res, plant_kpis, _, _ = optimizer.run_dispatch(
+                        plant_res, _, _, _ = optimizer.run_dispatch(
                             df=last_df,
                             plant_capacity_mw=float(snap["plant_capacity_mw"]),
                             min_load_pct=float(snap["min_load_pct"]),
                             max_load_pct=float(snap["max_load_pct"]),
-                            break_even_eur_per_mwh=float(snap["break_even"]),  # unused in tolling economics, but needed by engine
+                            break_even_eur_per_mwh=float(snap["break_even"]),
                             ramp_limit_mw_per_step=(float(snap["ramp_limit"]) if float(snap["ramp_limit"]) > 0 else None),
                             always_on=bool(snap["always_on"]),
                             dispatch_threshold_eur_per_mwh=float(cap_local),
-                            mwh_per_ton=float(snap["mwh_per_ton"]),  # not used by tolling KPIs
-                            methanol_price_eur_per_ton=0.0,          # don't mix with product revenue
+                            mwh_per_ton=float(snap["mwh_per_ton"]),
+                            methanol_price_eur_per_ton=0.0,
                             co2_price_eur_per_ton=0.0,
                             co2_t_per_ton_meoh=float(snap["co2_intensity"]),
                             maintenance_pct_of_revenue=float(snap["maint_pct"]),
@@ -469,7 +448,7 @@ with tabs[4]:
                             battery_params=None,
                         )
 
-                        # Compute tolling KPIs for this case
+                        from core.tolling import TollingParams, build_tolling_timeline_and_kpis
                         toll_tmp = TollingParams(
                             enabled=True,
                             contracted_mw=float(contracted_mw),
@@ -480,7 +459,7 @@ with tabs[4]:
                             sga_pct=float(snap["sga_pct"]),
                             ins_pct=float(snap["ins_pct"]),
                         )
-                        toll_timeline_tmp, toll_kpis_tmp = build_tolling_timeline_and_kpis(
+                        _, toll_kpis_tmp = build_tolling_timeline_and_kpis(
                             plant_results=plant_res,
                             toll=toll_tmp,
                             contracted_mw_cap=float(contracted_mw),
@@ -494,11 +473,6 @@ with tabs[4]:
                             "contracted_mw": float(contracted_mw),
                             "capacity_fee_eur_per_mw_month": float(cap_fee_fixed),
                             "other_var_cost_eur_per_mwh": float(other_var_cost),
-                            "toll_capacity_revenue_total_eur": toll_kpis_tmp.get("tolling_capacity_revenue_total_eur", 0.0),
-                            "toll_variable_revenue_total_eur": toll_kpis_tmp.get("tolling_variable_revenue_total_eur", 0.0),
-                            "toll_power_cost_total_eur": toll_kpis_tmp.get("tolling_power_cost_total_eur", 0.0),
-                            "toll_other_var_cost_total_eur": toll_kpis_tmp.get("tolling_other_var_cost_total_eur", 0.0),
-                            "toll_pct_costs_total_eur": toll_kpis_tmp.get("tolling_pct_costs_total_eur", 0.0),
                             "toll_profit_eur": toll_kpis_tmp.get("tolling_total_profit_eur", 0.0),
                         })
 
@@ -506,12 +480,9 @@ with tabs[4]:
                     st.warning("No matrix points computed (check inputs).")
                 else:
                     mat_t = pd.DataFrame(rows_t)
-                    st.session_state["last_matrix_df_toll"] = mat_t
-
                     st.subheader("Tolling matrix — Results")
                     st.dataframe(mat_t)
 
-                    # Heatmap: profit vs variable fee & margin
                     try:
                         pivot_t = mat_t.pivot(index="variable_fee_eur_per_mwh",
                                               columns="target_margin_pct",
