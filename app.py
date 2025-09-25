@@ -1,12 +1,12 @@
-# app.py — header (replace your current top-of-file block with this)
+# app.py — top block
 import os
 import streamlit as st
 import pandas as pd
 
-# Core modules you already have
+# Import submodules directly to avoid package-level side effects
 import core.io as io
 import core.optimizer as optimizer
-from core import render_help_button  # <-- help toggle from core.help
+from core import render_help_button  # exported by core.__init__
 
 st.set_page_config(page_title="Dispatch Optimizer", layout="wide")
 
@@ -15,10 +15,11 @@ if os.path.exists("logo.png"):
     st.image("logo.png", width=220)
 st.title("Quarter-hour Dispatch Optimizer (Profit-Max)")
 
-# Show the “How this app works” toggle (main page). To place in sidebar, use: render_help_button("sidebar")
+# Help toggle (place in main; for sidebar use render_help_button("sidebar"))
 render_help_button("main")
 
-# ---- keep the rest of your original app.py code below this line ----
+# ---- keep your original app body below ----
+
 # --------- Layout ---------
 tabs = st.tabs(["Inputs & Run", "Results", "Charts", "Downloads", "Matrix & Portfolio"])
 
