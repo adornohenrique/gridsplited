@@ -1,5 +1,5 @@
 # core/io.py
-import io
+import io as _io
 import pandas as pd
 from typing import Optional
 
@@ -24,13 +24,17 @@ def _standardize_cols(df0: pd.DataFrame) -> Optional[pd.DataFrame]:
 
     return None
 
-def load_prices(uploaded) -> pd.DataFrame:
-    """Accept CSV (auto-sep) or Excel. Return df[timestamp, price_eur_per_mwh]."""
-    name = uploaded.name.lower()
+def load_prices_from_bytes(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    """
+    Parse CSV or Excel bytes -> DataFrame[timestamp, price_eur_per_mwh].
+    """
+    name = filename.lower()
     df = None
 
     if name.endswith((".xlsx", ".xls")):
-        xls = pd.ExcelFile(uploaded)
+        bio = _io.BytesIO(file_bytes)
+        bio.name = filename
+        xls = pd.ExcelFile(bio)
         for sh in xls.sheet_names:
             try:
                 tmp = pd.read_excel(xls, sheet_name=sh)
@@ -42,18 +46,16 @@ def load_prices(uploaded) -> pd.DataFrame:
         if df is None:
             raise ValueError("Could not find timestamp/price columns in the Excel file.")
     else:
-        content = uploaded.read()
-        uploaded.seek(0)
+        # CSV with auto-separator, fallback tries
         try:
-            tmp = pd.read_csv(io.BytesIO(content), sep=None, engine="python")
+            tmp = pd.read_csv(_io.BytesIO(file_bytes), sep=None, engine="python")
             df = _standardize_cols(tmp)
         except Exception:
             df = None
-
         if df is None:
             for sep in [";", "\t", ","]:
                 try:
-                    tmp = pd.read_csv(io.BytesIO(content), sep=sep)
+                    tmp = pd.read_csv(_io.BytesIO(file_bytes), sep=sep)
                     df = _standardize_cols(tmp)
                     if df is not None:
                         break
@@ -65,6 +67,7 @@ def load_prices(uploaded) -> pd.DataFrame:
                 "Save as CSV with headers: timestamp, price_eur_per_mwh."
             )
 
+    # Clean types
     df = df.dropna(how="all")
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
