@@ -1,38 +1,125 @@
 # core/io.py
 import pandas as pd
 import numpy as np
+import os
 
-REQUIRED_COLS = {"timestamp", "price"}
+REQUIRED_COLS = {"timestamp", "price"}  # kept for reference; we infer if missing
 
-def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    rename_map = {}
+# ---- Helpers ---------------------------------------------------------------
+
+def _drop_all_empty_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.dropna(axis=1, how="all")
+    df.columns = [str(c).strip() for c in df.columns]
+    # ensure unique column names
+    if len(set(df.columns)) != len(df.columns):
+        seen = {}
+        newcols = []
+        for c in df.columns:
+            n = seen.get(c, 0)
+            newcols.append(c if n == 0 else f"{c}_{n}")
+            seen[c] = n + 1
+        df.columns = newcols
+    return df
+
+def _best_datetime_col(df: pd.DataFrame) -> str | None:
+    best, best_score = None, 0.0
     for c in df.columns:
-        lc = str(c).strip().lower()
-        if lc in {"timestamp", "time", "datetime", "data", "date"}:
-            rename_map[c] = "timestamp"
-        elif lc in {"price", "preco", "€/mwh", "eur/mwh", "euro/mwh", "value", "spot"}:
-            rename_map[c] = "price"
-    if rename_map:
-        df = df.rename(columns=rename_map)
-    return df
+        s = pd.to_datetime(df[c], errors="coerce", utc=True)
+        score = float(s.notna().mean())
+        if score > best_score and score > 0.5:  # >50% parse success
+            best, best_score = c, score
+    return best
 
-def load_prices(file) -> pd.DataFrame:
-    name = getattr(file, "name", None)
-    if name and name.lower().endswith((".xlsx", ".xls")):
-        df = pd.read_excel(file)
+def _best_numeric_col(df: pd.DataFrame, exclude: str | None = None) -> str | None:
+    best, best_score = None, 0.0
+    for c in df.columns:
+        if exclude and c == exclude:
+            continue
+        s = pd.to_numeric(df[c], errors="coerce")
+        score = float(s.notna().mean())
+        if score > best_score and score > 0.5:  # >50% numeric
+            best, best_score = c, score
+    return best
+
+# ---- Public API ------------------------------------------------------------
+
+def load_prices(file_or_path) -> pd.DataFrame:
+    """
+    Robust loader for price files.
+
+    Accepts CSV/XLSX with many real-world headers, including ERCOT-style:
+    - "UTC Timestamp (Interval Ending)"  -> timestamp
+    - "Houston LMP" (or any *LMP*/price-like column) -> price
+    Also handles 2-column files with no headers and drops all-empty columns.
+    """
+    name = getattr(file_or_path, "name", None) or str(file_or_path)
+    if name.lower().endswith((".xlsx", ".xls")):
+        df = pd.read_excel(file_or_path)
     else:
-        df = pd.read_csv(file)
-    df = _normalize_columns(df)
-    missing = REQUIRED_COLS - set(map(str.lower, df.columns))
-    if missing:
-        raise ValueError(f"Missing columns: {missing}")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-    if df["timestamp"].isna().any():
-        raise ValueError("Some timestamps could not be parsed.")
-    df["price"] = pd.to_numeric(df["price"], errors="coerce")
-    df = df.dropna(subset=["price"])
-    df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
-    return df
+        df = pd.read_csv(file_or_path)
+
+    df = _drop_all_empty_columns(df)
+
+    # Try name-based mapping first (broad aliases)
+    lc = {c: str(c).strip().lower() for c in df.columns}
+    # timestamp aliases (contains-check on purpose)
+    ts_aliases = [
+        "timestamp", "time", "datetime", "date",
+        "utc timestamp", "interval ending", "interval_end", "interval start",
+        "interval_start", "settlementdate", "delivery start", "delivery_end",
+        "hour", "he",
+    ]
+    # price aliases (contains-check)
+    price_aliases = [
+        "price", "lmp", "settlement point price",
+        "price ($/mwh)", "price (eur/mwh)", "price (€/mwh)",
+        "spot", "value", "rtm", "dam",
+    ]
+
+    ts_col = None
+    price_col = None
+
+    for alias in ts_aliases:
+        for c, l in lc.items():
+            if alias == l or alias in l:
+                ts_col = c
+                break
+        if ts_col:
+            break
+
+    for alias in price_aliases:
+        for c, l in lc.items():
+            if alias == l or alias in l:
+                price_col = c
+                break
+        if price_col:
+            break
+
+    # Fallback: heuristics
+    if ts_col is None:
+        ts_col = _best_datetime_col(df)
+    if price_col is None:
+        price_col = _best_numeric_col(df, exclude=ts_col)
+
+    # Absolute fallback: take first two columns if still uncertain
+    if (ts_col is None or price_col is None) and df.shape[1] >= 2:
+        ts_col = ts_col or df.columns[0]
+        price_col = price_col or df.columns[1]
+
+    if ts_col is None or price_col is None:
+        raise ValueError(
+            f"Could not infer timestamp/price columns. Columns seen: {df.columns.tolist()}"
+        )
+
+    out = df[[ts_col, price_col]].copy()
+    out.columns = ["timestamp", "price"]
+
+    out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce", utc=True)
+    out["price"] = pd.to_numeric(out["price"], errors="coerce")
+
+    out = out.dropna(subset=["timestamp", "price"])
+    out = out.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
+    return out
 
 def ensure_quarter_hour(df: pd.DataFrame, method: str = "pad") -> pd.DataFrame:
     df = df.copy().set_index("timestamp")
