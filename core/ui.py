@@ -57,7 +57,9 @@ def sidebar() -> SimpleNamespace:
 
     st.sidebar.header("Optional — Benchmark & OPEX")
     water_cost_t = st.sidebar.number_input("Water cost (€/t)", value=d["WATER_COST_T"], step=0.1, min_value=0.0)
-    trader_margin_pct_ui = st.sidebar.number_input("Trader margin for benchmark (% of MeOH revenue)", value=d["TRADER_MARGIN_PCT_UI"], step=1.0, min_value=0.0, max_value=100.0)
+    trader_margin_pct_ui = st.sidebar.number_input(
+        "Trader margin for benchmark (% of MeOH revenue)", value=d["TRADER_MARGIN_PCT_UI"], step=1.0, min_value=0.0, max_value=100.0
+    )
     other_opex_t = st.sidebar.number_input("Other variable OPEX (€/t)", value=d["OTHER_OPEX_T"], step=1.0, min_value=0.0)
     use_bench_as_break_even = st.sidebar.checkbox("Use Benchmark as Break-even for dispatch", value=False)
 
@@ -65,19 +67,28 @@ def sidebar() -> SimpleNamespace:
     MARGIN_METHOD = st.sidebar.radio("Margin method", ["Power-only (vs BE)", "Full-economics"], index=0)
     TARGET_MARGIN_PCT = st.sidebar.number_input("Target margin (%)", value=d["TARGET_MARGIN_PCT"], step=1.0, min_value=0.0, max_value=95.0)
 
-    # Battery
+    # ---------------- TOLLING (optional) ----------------
+    st.sidebar.header("Tolling (optional)")
+    TOLLING_ENABLED = st.sidebar.checkbox("Enable tolling mode?", value=False, help="Use capacity + variable toll revenues instead of product sales.")
+    contracted_mw = st.sidebar.number_input("Contracted MW (≤ Plant cap)", value=0.0, min_value=0.0, max_value=float(plant_capacity_mw), step=0.5)
+    toll_cap_fee = st.sidebar.number_input("Capacity fee (€/MW-month)", value=0.0, step=10.0, min_value=0.0)
+    toll_var_fee = st.sidebar.number_input("Variable fee (€/MWh)", value=0.0, step=1.0, min_value=0.0)
+    toll_other_mwh = st.sidebar.number_input("Other variable cost (€/MWh)", value=0.0, step=0.5, min_value=0.0)
+    st.sidebar.caption("In Tolling mode, % OPEX (Maint/SGA/Insurance) apply to variable toll revenue.")
+
+    # ---------------- Battery ----------------
     st.sidebar.header("Battery (optional)")
-    bat_en = st.sidebar.checkbox("Enable battery?", value=bool(constants.BATTERY_DEFAULTS.get("enabled", False)))
-    e_mwh = st.sidebar.number_input("Energy (MWh)", value=float(constants.BATTERY_DEFAULTS.get("e_mwh", 10.0)))
-    p_ch = st.sidebar.number_input("Charge power (MW)", value=float(constants.BATTERY_DEFAULTS.get("p_ch_mw", 5.0)))
-    p_dis = st.sidebar.number_input("Discharge power (MW)", value=float(constants.BATTERY_DEFAULTS.get("p_dis_mw", 5.0)))
-    eff_ch = st.sidebar.number_input("Charge efficiency", value=float(constants.BATTERY_DEFAULTS.get("eff_ch", 0.95)), min_value=0.5, max_value=1.0, step=0.01)
-    eff_dis = st.sidebar.number_input("Discharge efficiency", value=float(constants.BATTERY_DEFAULTS.get("eff_dis", 0.95)), min_value=0.5, max_value=1.0, step=0.01)
-    soc_min = st.sidebar.number_input("SOC min (0–1)", value=float(constants.BATTERY_DEFAULTS.get("soc_min", 0.1)), min_value=0.0, max_value=1.0, step=0.01)
-    soc_max = st.sidebar.number_input("SOC max (0–1)", value=float(constants.BATTERY_DEFAULTS.get("soc_max", 0.9)), min_value=0.0, max_value=1.0, step=0.01)
-    price_low = st.sidebar.number_input("Charge when price ≤", value=float(constants.BATTERY_DEFAULTS.get("price_low", 30.0)))
-    price_high = st.sidebar.number_input("Discharge when price ≥", value=float(constants.BATTERY_DEFAULTS.get("price_high", 90.0)))
-    degr = st.sidebar.number_input("Degradation (€/MWh throughput)", value=float(constants.BATTERY_DEFAULTS.get("degradation_eur_per_mwh", 0.0)))
+    bat_en = st.sidebar.checkbox("Enable battery?", value=False)
+    e_mwh = st.sidebar.number_input("Energy (MWh)", value=10.0)
+    p_ch = st.sidebar.number_input("Charge power (MW)", value=5.0)
+    p_dis = st.sidebar.number_input("Discharge power (MW)", value=5.0)
+    eff_ch = st.sidebar.number_input("Charge efficiency", value=0.95, min_value=0.5, max_value=1.0, step=0.01)
+    eff_dis = st.sidebar.number_input("Discharge efficiency", value=0.95, min_value=0.5, max_value=1.0, step=0.01)
+    soc_min = st.sidebar.number_input("SOC min (0–1)", value=0.10, min_value=0.0, max_value=1.0, step=0.01)
+    soc_max = st.sidebar.number_input("SOC max (0–1)", value=0.90, min_value=0.0, max_value=1.0, step=0.01)
+    price_low = st.sidebar.number_input("Charge when price ≤", value=30.0)
+    price_high = st.sidebar.number_input("Discharge when price ≥", value=90.0)
+    degr = st.sidebar.number_input("Degradation (€/MWh throughput)", value=0.0)
 
     run = st.sidebar.button("Run Optimization", use_container_width=True)
 
@@ -86,9 +97,9 @@ def sidebar() -> SimpleNamespace:
     _scenario_download(locals())
     loaded = _scenario_upload()
     if loaded:
-        for k,v in loaded.items():
+        for k, v in loaded.items():
             if k in locals():
-                st.session_state[k] = v  # shallow update
+                st.session_state[k] = v
         st.sidebar.info("Loaded scenario. Adjust if needed and click Run.")
 
     return SimpleNamespace(**locals())
