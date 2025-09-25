@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 
-from core import ui, io, economics, optimizer, constants
+from core import ui, io, economics, optimizer, constants, show_help_panel
 from core.battery import BatteryParams, simulate_price_band
 
 st.set_page_config(page_title="Dispatch Optimizer", layout="wide")
@@ -10,6 +10,10 @@ st.set_page_config(page_title="Dispatch Optimizer", layout="wide")
 # ---- Header ----
 ui.display_logo("logo.png")
 st.title("Quarter-hour Dispatch Optimizer (Profit-Max)")
+
+# Help button
+show_help_panel()
+
 st.info("Upload your 15-min price file and click **Run Optimization**. "
         "This app autodetects CSV/Excel, separators, and comma-decimal formats.")
 
