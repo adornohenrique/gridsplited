@@ -1,43 +1,24 @@
-# app.py
+# app.py — header (replace your current top-of-file block with this)
 import os
 import streamlit as st
 import pandas as pd
 
-from core import ui, io, optimizer
+# Core modules you already have
+import core.io as io
+import core.optimizer as optimizer
+from core import render_help_button  # <-- help toggle from core.help
 
 st.set_page_config(page_title="Dispatch Optimizer", layout="wide")
 
-# Header
-ui.display_logo("logo.png")
+# Header (logo + title)
+if os.path.exists("logo.png"):
+    st.image("logo.png", width=220)
 st.title("Quarter-hour Dispatch Optimizer (Profit-Max)")
 
-# --------- Helpers (cached parsing & downsampling) ---------
-@st.cache_data(show_spinner=False)
-def _parse_prices_cached(file_bytes: bytes, filename: str) -> pd.DataFrame:
-    return io.load_prices_from_bytes(file_bytes, filename)
+# Show the “How this app works” toggle (main page). To place in sidebar, use: render_help_button("sidebar")
+render_help_button("main")
 
-def _downsample(df: pd.DataFrame, max_points: int = 2000) -> pd.DataFrame:
-    if len(df) <= max_points:
-        return df
-    step = max(1, len(df) // max_points)
-    return df.iloc[::step, :].reset_index(drop=True)
-
-def _compute_price_cap(params) -> tuple[float, str]:
-    be = params.BREAK_EVEN_EUR_MWH
-    p = float(params.TARGET_MARGIN_PCT) / 100.0
-
-    if str(params.MARGIN_METHOD).lower().startswith("power"):
-        cap = max(0.0, (1.0 - p) * be)
-        return cap, "power-only"
-
-    # Full-economics
-    o = (params.MAINT_PCT + params.SGA_PCT + params.INS_PCT) / 100.0
-    if params.MWH_PER_TON <= 0:
-        st.error("Full-economics margin requires Electricity per ton (MWh/t) > 0.")
-        return 0.0, "full-econ"
-    cap = (params.MEOH_PRICE * (1.0 - p - o) - params.CO2_PRICE * params.CO2_INTENSITY) / params.MWH_PER_TON
-    return max(0.0, float(cap)), "full-econ"
-
+# ---- keep the rest of your original app.py code below this line ----
 # --------- Layout ---------
 tabs = st.tabs(["Inputs & Run", "Results", "Charts", "Downloads", "Matrix & Portfolio"])
 
