@@ -1,41 +1,21 @@
 # core/help.py
-import streamlit as st
+how_it_works_md = """
+### How this app works
 
-HELP_MD = """
-# How this app works
+**Input:** a quarter-hour price time series with columns `timestamp` and `price` (€/MWh, UTC or timezone-aware).
 
-This app solves a **quarter-hour dispatch optimization**: given prices, technical limits, and (optionally) a battery,
-it finds the **profit-maximizing** operation subject to constraints.
-
----
-
-## Inputs
-- **Power prices (€/MWh)** at 15-min resolution (CSV/Excel).
-- **Plant parameters**: min/max load, ramps, efficiency.
-- **Economics**: product price, variable costs, CO₂ price.
-- **Battery (optional)**: capacity, power, efficiency, SOC limits.
-
----
-
-## Outputs
-- Dispatch profile (MW per 15-min).
-- Methanol production (tons).
-- Revenues & profit KPIs.
-- Charts & CSV downloads.
-- Guidance on whether a battery is required.
+**Pipeline**
+1) Load & normalize columns
+2) Enforce strict 15-minute cadence (fills gaps by forward-fill)
+3) Apply plant constraints (min/max, ramp, always-on)
+4) Greedy dispatch: run at Pmax when price ≥ threshold (break-even), else Pmin or 0
+5) Compute:
+   - **Proxy profit**: Σ[(Price − Break-even) × MWh]
+   - **Full MeOH economics** (if you provide MWh/t and prices)
 """
 
-def render_help_button(location: str = "main") -> None:
-    """
-    Renders a button that toggles a full 'How this app works' panel.
-    Only used in the main header.
-    """
-    if "show_help" not in st.session_state:
-        st.session_state["show_help"] = False
-
-    if st.button("📘 How this app works", key="help_btn_main", use_container_width=True):
-        st.session_state["show_help"] = not st.session_state["show_help"]
-
-    if st.session_state["show_help"]:
-        with st.expander("Close help", expanded=True):
-            st.markdown(HELP_MD)
+def show_help_panel(location: str = "main"):
+    import streamlit as st
+    with (st.sidebar if location == "sidebar" else st.container()):
+        with st.expander("How this app works"):
+            st.markdown(how_it_works_md)
