@@ -1,2 +1,4 @@
-from . import ui, io, economics, optimizer, constants, battery
-from .help import show_help_panel
+# Marks "core" as a Python package so imports like "from core.help import render_help" work.
+
+# (Optional, but handy) expose common submodules if you want:
+# from . import ui, io, optimizer, economics, constants
