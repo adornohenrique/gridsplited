@@ -18,35 +18,31 @@ class BatteryParams:
     price_low: float = 30.0
     price_high: float = 90.0
     degradation_eur_per_mwh: float = 0.0
-
-    # NEW: hybrid controls
-    use_for_min_load: bool = True
-    price_threshold_eur_per_mwh: Optional[float] = None  # pass the dispatch price cap used by the plant
+    # NEW:
+    prefer_self_supply: bool = True           # use battery to supply plant (esp. min load) when price < threshold
+    dispatch_threshold_eur_per_mwh: Optional[float] = None  # pass the cap for smarter decisions
 
 
 def simulate_price_band(df: pd.DataFrame, p: BatteryParams) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Legacy band-only (kept for compatibility)."""
+    """Legacy simple band strategy (kept for compatibility)."""
     if not p.enabled:
         return pd.DataFrame(), {"battery_enabled": False, "battery_profit_eur": 0.0}
 
-    step_h = 0.25  # 15 minutes
+    step_h = 0.25
     n = len(df)
     price = df["price_eur_per_mwh"].to_numpy()
 
     ch = np.zeros(n)
     dis = np.zeros(n)
     soc = np.zeros(n)
-    e = 0.5 * p.e_mwh  # start half-full
+    e = 0.5 * p.e_mwh
 
     for t in range(n):
         if price[t] <= p.price_low - 1e-9:
-            # charge
             ch[t] = min(p.p_ch_mw, (p.soc_max * p.e_mwh - e) / step_h)
         elif price[t] >= p.price_high + 1e-9:
-            # discharge
             dis[t] = min(p.p_dis_mw, (e - p.soc_min * p.e_mwh) / step_h)
 
-        # update energy
         e += ch[t] * p.eff_ch * step_h
         e -= dis[t] / p.eff_dis * step_h
         e = min(max(e, p.soc_min * p.e_mwh), p.soc_max * p.e_mwh)
@@ -56,11 +52,8 @@ def simulate_price_band(df: pd.DataFrame, p: BatteryParams) -> Tuple[pd.DataFram
     dfb["bat_charge_mw"] = ch
     dfb["bat_discharge_mw"] = dis
     dfb["bat_soc"] = soc
-    dfb["bat_mode"] = np.where(dis > 0, "arbitrage_dis",
-                        np.where(ch > 0, "arbitrage_ch", "idle"))
 
-    # economics
-    energy_ch = (ch * step_h).sum()  # MWh
+    energy_ch = (ch * step_h).sum()
     energy_dis = (dis * step_h).sum()
     cost_energy = (ch * step_h * price).sum()
     revenue_energy = (dis * step_h * price).sum()
@@ -69,130 +62,153 @@ def simulate_price_band(df: pd.DataFrame, p: BatteryParams) -> Tuple[pd.DataFram
 
     kpis = dict(
         battery_enabled=True,
+        battery_trading_profit_eur=float(profit),
+        battery_grid_cost_savings_eur=0.0,
         battery_profit_eur=float(profit),
         battery_energy_ch_mwh=float(energy_ch),
         battery_energy_dis_mwh=float(energy_dis),
         battery_degradation_eur=float(degr),
         battery_avg_soc=float(soc.mean()),
         battery_final_soc=float(soc[-1] if len(soc) else 0.0),
+        strategy="band",
     )
     return dfb, kpis
 
 
-def simulate_hybrid_support_minload(
+def simulate_hybrid_self_supply(
+    prices_df: pd.DataFrame,
     plant_df: pd.DataFrame,
-    *,
-    p: BatteryParams,
-    min_mw: float,
-    price_threshold_eur_per_mwh: Optional[float],
+    p: BatteryParams
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    Hybrid battery:
-      1) If price < threshold and plant is at (or near) min load, DISCHARGE to cover min-load consumption (reduce grid draw).
-      2) Otherwise run classic price-band arbitrage.
-
-    Inputs:
-      plant_df requires columns:
-        - 'timestamp'
-        - 'price_eur_per_mwh'
-        - 'dispatch_mw' or 'mw' (plant power)
-      min_mw: numeric (constant min load in MW)
+    Smart hybrid strategy:
+      1) If price < threshold (cap) and plant is running, DISCHARGE to supply plant load
+         (prioritise min-load coverage), reducing grid imports.
+      2) Else if price >= high band, discharge to grid (arbitrage).
+      3) If price <= low band, charge from grid.
+    Economics:
+      - Savings from self-supply reduce grid purchases (not revenue).
+      - Revenues from discharge-to-grid.
+      - Costs from charging + degradation on all throughput.
+    Requires plant_df to contain at least: ['timestamp','price_eur_per_mwh', 'mw' or 'dispatch_mw'].
     """
     if not p.enabled:
-        return pd.DataFrame(), {"battery_enabled": False, "battery_profit_eur": 0.0}
+        return pd.DataFrame(), {
+            "battery_enabled": False,
+            "battery_profit_eur": 0.0,
+            "battery_grid_cost_savings_eur": 0.0,
+            "strategy": "hybrid_self_supply(disabled)"
+        }
 
-    df = plant_df.copy()
-    if "dispatch_mw" in df.columns:
-        mw_col = "dispatch_mw"
-    elif "mw" in df.columns:
-        mw_col = "mw"
-    else:
-        raise ValueError("plant_df must contain 'dispatch_mw' or 'mw' column.")
-
+    # Inputs
+    df = prices_df[["timestamp", "price_eur_per_mwh"]].copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    dfp = plant_df.copy()
+    dfp["timestamp"] = pd.to_datetime(dfp["timestamp"])
+    df = df.merge(dfp, on="timestamp", how="left")
+
+    # Figure dispatch column
+    disp_col = "dispatch_mw" if "dispatch_mw" in df.columns else ("mw" if "mw" in df.columns else None)
+    if disp_col is None:
+        raise ValueError("Plant results missing 'dispatch_mw' or 'mw' column for battery hybrid simulation.")
+
+    step_h = 0.25
+    n = len(df)
 
     price = df["price_eur_per_mwh"].to_numpy()
-    mw = df[mw_col].to_numpy()
-    n = len(df)
-    step_h = 0.25
+    mw_plant = df[disp_col].fillna(0.0).to_numpy()
 
-    thresh = price_threshold_eur_per_mwh if (price_threshold_eur_per_mwh is not None) else p.price_low
+    # Infer min load (approx) from plant_df if present; else 0
+    # If plant core exported a 'min_mw' per step, use that; else take min positive dispatch as a proxy.
+    if "min_mw" in df.columns:
+        min_mw = df["min_mw"].fillna(0.0).to_numpy()
+    else:
+        min_val = float(np.nanmin(mw_plant[mw_plant > 0])) if np.any(mw_plant > 0) else 0.0
+        min_mw = np.full(n, min_val)
 
+    threshold = p.dispatch_threshold_eur_per_mwh if p.dispatch_threshold_eur_per_mwh is not None else p.price_low
+
+    # State arrays
     ch = np.zeros(n)
-    dis = np.zeros(n)
+    dis_to_plant = np.zeros(n)
+    dis_to_grid = np.zeros(n)
     soc = np.zeros(n)
-    mode = np.array(["idle"] * n, dtype=object)
+    grid_import_mw = mw_plant.copy()  # will be reduced by self-supply
+    action = np.full(n, "", dtype=object)
 
-    e = 0.5 * p.e_mwh  # start half-full
+    e = 0.5 * p.e_mwh
 
     for t in range(n):
-        # 1) Support min-load if price below threshold and plant is near min load
-        did_support = False
-        if p.use_for_min_load and price[t] < thresh - 1e-9 and mw[t] > 0.0:
-            # heuristically consider "near min" within ±2% absolute of min_mw
-            if mw[t] <= max(min_mw * 1.02, min_mw + 0.01):
-                desire = min(mw[t], min_mw)  # MW we'd like to cover from battery
-                max_dis_by_energy = (e - p.soc_min * p.e_mwh) / step_h
-                dis_support = max(0.0, min(p.p_dis_mw, desire, max_dis_by_energy))
-                if dis_support > 0:
-                    dis[t] = dis_support
-                    did_support = True
-                    mode[t] = "support_min"
+        # 1) SELF-SUPPLY if cheap (price below threshold) and plant is running
+        if p.prefer_self_supply and price[t] < threshold - 1e-9 and mw_plant[t] > 0:
+            # try to cover at least min load from battery
+            target_ss = min(min_mw[t], mw_plant[t])  # lower bound to keep plant at min
+            # maximum we can discharge this step given SoC and power limit
+            max_dis = min(p.p_dis_mw, (e - p.soc_min * p.e_mwh) / step_h)
+            ss = max(0.0, min(target_ss, max_dis))
+            if ss > 0:
+                dis_to_plant[t] = ss
+                grid_import_mw[t] = max(0.0, mw_plant[t] - ss)
+                e -= (ss / p.eff_dis) * step_h
+                e = max(e, p.soc_min * p.e_mwh)
+                action[t] = "self-supply"
 
-        # 2) If not supporting min-load this step, use band strategy
-        if not did_support:
-            # discharge high
-            if price[t] >= p.price_high + 1e-9:
-                max_dis_by_energy = (e - p.soc_min * p.e_mwh) / step_h
-                dis[t] = max(0.0, min(p.p_dis_mw, max_dis_by_energy))
-                if dis[t] > 0:
-                    mode[t] = "arbitrage_dis"
-            # charge low
-            elif price[t] <= p.price_low - 1e-9:
-                max_ch_by_space = (p.soc_max * p.e_mwh - e) / step_h
-                ch[t] = max(0.0, min(p.p_ch_mw, max_ch_by_space))
-                if ch[t] > 0:
-                    mode[t] = "arbitrage_ch"
-            # else idle (mode already 'idle')
+        # 2) If high price, DISCHARGE to grid (after self-supply)
+        # Only if power remains and SoC available
+        max_dis_now = min(p.p_dis_mw - dis_to_plant[t], (e - p.soc_min * p.e_mwh) / step_h)
+        if price[t] >= p.price_high + 1e-9 and max_dis_now > 0:
+            dis_to_grid[t] = max_dis_now
+            e -= (dis_to_grid[t] / p.eff_dis) * step_h
+            e = max(e, p.soc_min * p.e_mwh)
+            action[t] = (action[t] + "+") if action[t] else ""
+            action[t] += "arb-discharge"
 
-        # Update SoE
-        e += ch[t] * p.eff_ch * step_h
-        e -= dis[t] / p.eff_dis * step_h
-        e = min(max(e, p.soc_min * p.e_mwh), p.soc_max * p.e_mwh)
+        # 3) If low price, CHARGE (if power and headroom available)
+        max_ch = min(p.p_ch_mw, (p.soc_max * p.e_mwh - e) / step_h)
+        if price[t] <= p.price_low - 1e-9 and max_ch > 0:
+            ch[t] = max_ch
+            e += ch[t] * p.eff_ch * step_h
+            e = min(e, p.soc_max * p.e_mwh)
+            action[t] = (action[t] + "+") if action[t] else ""
+            action[t] += "charge"
+
         soc[t] = e / p.e_mwh
-
-    out = df[["timestamp", "price_eur_per_mwh"]].copy()
-    out["plant_mw"] = mw
-    out["bat_charge_mw"] = ch
-    out["bat_discharge_mw"] = dis
-    out["bat_soc"] = soc
-    out["bat_mode"] = mode
 
     # Economics
     energy_ch = (ch * step_h).sum()
-    energy_dis = (dis * step_h).sum()
+    energy_dis_to_grid = (dis_to_grid * step_h).sum()
+    energy_dis_to_plant = (dis_to_plant * step_h).sum()
 
-    # Charging is a cost at price[t]
-    cost_energy = float((ch * step_h * price).sum())
-    # Discharging offsets grid purchases or sells energy — value at price[t]
-    revenue_energy = float((dis * step_h * price).sum())
+    cost_charge = float((ch * step_h * price).sum())
+    revenue_dis_grid = float((dis_to_grid * step_h * price).sum())
 
-    # Count how much discharge went to min-load support
-    support_mask = (mode == "support_min").astype(float)
-    energy_dis_support = float((dis * step_h * support_mask).sum())
+    # Grid cost savings from self-supply:
+    savings = float((dis_to_plant * step_h * price).sum())
 
-    degr = float(p.degradation_eur_per_mwh) * float(energy_ch + energy_dis)
-    profit = revenue_energy - cost_energy - degr
+    degr = float(p.degradation_eur_per_mwh * (energy_ch + energy_dis_to_grid + energy_dis_to_plant))
+
+    trading_profit = revenue_dis_grid - cost_charge - degr
+    total_profit = trading_profit + savings
+
+    out = prices_df[["timestamp", "price_eur_per_mwh"]].copy()
+    out["bat_charge_mw"] = ch
+    out["bat_discharge_mw_to_plant"] = dis_to_plant
+    out["bat_discharge_mw_to_grid"] = dis_to_grid
+    out["bat_soc"] = soc
+    out["grid_import_mw_after_battery"] = grid_import_mw
+    out["battery_action"] = action
 
     kpis = dict(
         battery_enabled=True,
-        battery_profit_eur=float(profit),
-        battery_energy_ch_mwh=float(energy_ch),
-        battery_energy_dis_mwh=float(energy_dis),
-        battery_energy_dis_support_min_mwh=float(energy_dis_support),
-        battery_degradation_eur=float(degr),
-        battery_avg_soc=float(np.mean(soc) if len(soc) else 0.0),
+        strategy="hybrid_self_supply",
+        battery_energy_charge_mwh=float(energy_ch),
+        battery_energy_discharge_to_plant_mwh=float(energy_dis_to_plant),
+        battery_energy_discharge_to_grid_mwh=float(energy_dis_to_grid),
+        battery_degradation_eur=degr,
+        battery_trading_profit_eur=trading_profit,
+        battery_grid_cost_savings_eur=savings,
+        battery_profit_eur=total_profit,
+        battery_avg_soc=float(soc.mean()),
         battery_final_soc=float(soc[-1] if len(soc) else 0.0),
     )
     return out, kpis
