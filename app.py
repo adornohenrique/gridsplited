@@ -116,7 +116,6 @@ with tab3:
     if results is None:
         st.info("Run an optimization first.")
     else:
-        # Lightweight charts (no seaborn)
         st.line_chart(results.set_index("timestamp")[["price_eur_per_mwh"]], use_container_width=True)
         st.line_chart(results.set_index("timestamp")[["dispatch_mw"]], use_container_width=True)
 
@@ -132,7 +131,6 @@ with tab4:
 with tab5:
     st.subheader("Matrix & Portfolio")
 
-    # Build a base dict (re-usable) once user has a valid file
     df_for_batch = None
     if params.uploaded is not None:
         try:
@@ -147,7 +145,6 @@ with tab5:
 
     with subA:
         st.caption("Sweep two parameters and evaluate total profit (simple grid).")
-        # Choose parameters to sweep
         options = {
             "break_even_eur_per_mwh": ("Price BE", 10.0, 300.0),
             "min_load_pct": ("Min load (0–1)", 0.0, 1.0),
