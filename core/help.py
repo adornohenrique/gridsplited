@@ -9,7 +9,7 @@ it finds the **profit-maximizing** operation subject to constraints.
 
 ---
 
-## 1) Inputs
+## Inputs
 - **Power prices (€/MWh)** at 15-min resolution (CSV/Excel).
 - **Plant parameters**: min/max load, ramps, efficiency.
 - **Economics**: product price, variable costs, CO₂ price.
@@ -17,7 +17,7 @@ it finds the **profit-maximizing** operation subject to constraints.
 
 ---
 
-## 2) Outputs
+## Outputs
 - Dispatch profile (MW per 15-min).
 - Methanol production (tons).
 - Revenues & profit KPIs.
@@ -34,24 +34,26 @@ def render_help_button(location: str = "main") -> None:
     location : {"main","sidebar"}
         Where to render the toggle button.
     """
-    if "show_help" not in st.session_state:
-        st.session_state.show_help = False
+    # Separate session state per location
+    state_key = f"show_help_{location}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = False
 
-    # Assign a unique key per location
+    # Unique key for the button widget
     btn_key = f"help_btn_{location}"
 
     def _button():
         if st.button("📘 How this app works", key=btn_key, use_container_width=True):
-            st.session_state.show_help = not st.session_state.show_help
+            st.session_state[state_key] = not st.session_state[state_key]
 
     if location == "sidebar":
         with st.sidebar:
             _button()
-            if st.session_state.show_help:
+            if st.session_state[state_key]:
                 with st.expander("Close help", expanded=True):
                     st.markdown(HELP_MD)
     else:
         _button()
-        if st.session_state.show_help:
+        if st.session_state[state_key]:
             with st.expander("Close help", expanded=True):
                 st.markdown(HELP_MD)
