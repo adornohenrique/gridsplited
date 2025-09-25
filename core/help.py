@@ -28,32 +28,14 @@ it finds the **profit-maximizing** operation subject to constraints.
 def render_help_button(location: str = "main") -> None:
     """
     Renders a button that toggles a full 'How this app works' panel.
-
-    Parameters
-    ----------
-    location : {"main","sidebar"}
-        Where to render the toggle button.
+    Only used in the main header.
     """
-    # Separate session state per location
-    state_key = f"show_help_{location}"
-    if state_key not in st.session_state:
-        st.session_state[state_key] = False
+    if "show_help" not in st.session_state:
+        st.session_state["show_help"] = False
 
-    # Unique key for the button widget
-    btn_key = f"help_btn_{location}"
+    if st.button("📘 How this app works", key="help_btn_main", use_container_width=True):
+        st.session_state["show_help"] = not st.session_state["show_help"]
 
-    def _button():
-        if st.button("📘 How this app works", key=btn_key, use_container_width=True):
-            st.session_state[state_key] = not st.session_state[state_key]
-
-    if location == "sidebar":
-        with st.sidebar:
-            _button()
-            if st.session_state[state_key]:
-                with st.expander("Close help", expanded=True):
-                    st.markdown(HELP_MD)
-    else:
-        _button()
-        if st.session_state[state_key]:
-            with st.expander("Close help", expanded=True):
-                st.markdown(HELP_MD)
+    if st.session_state["show_help"]:
+        with st.expander("Close help", expanded=True):
+            st.markdown(HELP_MD)
