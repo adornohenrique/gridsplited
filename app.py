@@ -139,11 +139,13 @@ def _downsample(df: pd.DataFrame, max_points: int = 2000) -> pd.DataFrame:
 
 
 # ---------- Layout ----------
+# Call sidebar ONCE (shared across all tabs)
+params = sidebar()
+
 tabs = st.tabs(["Inputs & Run", "Results", "Charts", "Downloads", "Matrix & Portfolio"])
 
 with tabs[0]:
     st.info("Upload your 15-min price file and click **Run Optimization**. The app auto-detects CSV/Excel formats.")
-    params = sidebar()
 
     price_cap, method_tag = _compute_price_cap(params)
     st.caption(f"Calculated price cap: **{price_cap:,.2f} €/MWh** (method: {method_tag})")
