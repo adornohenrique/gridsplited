@@ -1,82 +1,59 @@
 # core/io.py
-import io as _io
 import pandas as pd
-from typing import Optional
+import numpy as np
 
-def _standardize_cols(df0: pd.DataFrame) -> Optional[pd.DataFrame]:
-    if df0 is None or df0.empty:
-        return None
-    cols_map = {str(c).strip().lower(): c for c in df0.columns}
-    ts_key = next((k for k in cols_map if any(x in k for x in
-                ["timestamp","time","datetime","interval","start","date"])), None)
-    pr_key = next((k for k in cols_map if any(x in k for x in
-                ["price","lmp","eur_per_mwh","usd_per_mwh","$/mwh","€/mwh"])), None)
+REQUIRED_COLS = {"timestamp", "price"}
 
-    if ts_key and pr_key:
-        out = df0[[cols_map[ts_key], cols_map[pr_key]]].copy()
-        out.columns = ["timestamp", "price_eur_per_mwh"]
-        return out
-
-    if df0.shape[1] == 2:
-        out = df0.copy()
-        out.columns = ["timestamp", "price_eur_per_mwh"]
-        return out
-
-    return None
-
-def load_prices_from_bytes(file_bytes: bytes, filename: str) -> pd.DataFrame:
-    """
-    Parse CSV or Excel bytes -> DataFrame[timestamp, price_eur_per_mwh].
-    """
-    name = filename.lower()
-    df = None
-
-    if name.endswith((".xlsx", ".xls")):
-        bio = _io.BytesIO(file_bytes)
-        bio.name = filename
-        xls = pd.ExcelFile(bio)
-        for sh in xls.sheet_names:
-            try:
-                tmp = pd.read_excel(xls, sheet_name=sh)
-                df = _standardize_cols(tmp)
-                if df is not None:
-                    break
-            except Exception:
-                continue
-        if df is None:
-            raise ValueError("Could not find timestamp/price columns in the Excel file.")
-    else:
-        # CSV with auto-separator, fallback tries
-        try:
-            tmp = pd.read_csv(_io.BytesIO(file_bytes), sep=None, engine="python")
-            df = _standardize_cols(tmp)
-        except Exception:
-            df = None
-        if df is None:
-            for sep in [";", "\t", ","]:
-                try:
-                    tmp = pd.read_csv(_io.BytesIO(file_bytes), sep=sep)
-                    df = _standardize_cols(tmp)
-                    if df is not None:
-                        break
-                except Exception:
-                    continue
-        if df is None:
-            raise ValueError(
-                "CSV must contain timestamp and price columns. "
-                "Save as CSV with headers: timestamp, price_eur_per_mwh."
-            )
-
-    # Clean types
-    df = df.dropna(how="all")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-
-    if df["price_eur_per_mwh"].dtype == object:
-        df["price_eur_per_mwh"] = df["price_eur_per_mwh"].astype(str).str.replace(",", ".", regex=False)
-    df["price_eur_per_mwh"] = pd.to_numeric(df["price_eur_per_mwh"], errors="coerce")
-
-    df = df.dropna(subset=["timestamp", "price_eur_per_mwh"])
-    df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
-    if df.empty:
-        raise ValueError("No valid rows after parsing. Check your timestamp and price columns.")
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {}
+    for c in df.columns:
+        lc = str(c).strip().lower()
+        if lc in {"timestamp", "time", "datetime", "data", "date"}:
+            rename_map[c] = "timestamp"
+        elif lc in {"price", "preco", "€/mwh", "eur/mwh", "euro/mwh", "value", "spot"}:
+            rename_map[c] = "price"
+    if rename_map:
+        df = df.rename(columns=rename_map)
     return df
+
+def load_prices(file) -> pd.DataFrame:
+    name = getattr(file, "name", None)
+    if name and name.lower().endswith((".xlsx", ".xls")):
+        df = pd.read_excel(file)
+    else:
+        df = pd.read_csv(file)
+    df = _normalize_columns(df)
+    missing = REQUIRED_COLS - set(map(str.lower, df.columns))
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    if df["timestamp"].isna().any():
+        raise ValueError("Some timestamps could not be parsed.")
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df = df.dropna(subset=["price"])
+    df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
+    return df
+
+def ensure_quarter_hour(df: pd.DataFrame, method: str = "pad") -> pd.DataFrame:
+    df = df.copy().set_index("timestamp")
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    start = df.index.min().ceil("15min")
+    end = df.index.max().floor("15min")
+    idx = pd.date_range(start, end, freq="15min", tz=df.index.tz)
+    df = df.reindex(idx)
+    if method == "linear":
+        df["price"] = df["price"].interpolate(method="time", limit_direction="both")
+    else:
+        df["price"] = df["price"].ffill().bfill()
+    return df.reset_index(names="timestamp")
+
+def sanity_checks(df: pd.DataFrame, price_max_reasonable: float = 1000) -> dict:
+    issues = {}
+    diffs = df["timestamp"].diff().dropna()
+    off = diffs[~diffs.eq(pd.Timedelta(minutes=15))]
+    if len(off) > 0:
+        issues["irregular_cadence"] = int(len(off))
+    if (df["price"] < -2000).any() or (df["price"] > price_max_reasonable).any():
+        issues["price_outliers"] = int(((df["price"] < -2000) | (df["price"] > price_max_reasonable)).sum())
+    return issues
