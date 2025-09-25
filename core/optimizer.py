@@ -3,7 +3,7 @@ import os
 from typing import Dict, Any, Tuple, Optional
 import pandas as pd
 from dispatch_core import optimize_dispatch
-from .battery import BatteryParams, simulate_price_band
+from .battery import BatteryParams, simulate_price_band, simulate_hybrid_self_supply
 
 def run_dispatch(
     *,
@@ -27,8 +27,6 @@ def run_dispatch(
     battery_params: Optional[BatteryParams] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Any], pd.DataFrame, Dict[str, Any]]:
     """
-    Runs plant dispatch (core MILP inside dispatch_core.py) and, if battery enabled,
-    runs battery band simulation alongside.
     Returns: (plant_results_df, plant_kpis, battery_df, battery_kpis)
     """
     tmp_csv = "/tmp/_prices.csv"
@@ -59,6 +57,14 @@ def run_dispatch(
     # Battery
     bat_df, bat_kpis = (pd.DataFrame(), {"battery_enabled": False})
     if battery_params and battery_params.enabled:
-        bat_df, bat_kpis = simulate_price_band(df, battery_params)
+        # pass the price cap into battery for hybrid decisions
+        bp = BatteryParams(**{**battery_params.__dict__})
+        bp.dispatch_threshold_eur_per_mwh = float(dispatch_threshold_eur_per_mwh)
+
+        try:
+            bat_df, bat_kpis = simulate_hybrid_self_supply(df, plant_results, bp)
+        except Exception:
+            # fall back to simple band if plant columns missing
+            bat_df, bat_kpis = simulate_price_band(df, bp)
 
     return plant_results, plant_kpis, bat_df, bat_kpis
