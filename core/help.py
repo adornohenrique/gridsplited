@@ -35,8 +35,7 @@ If enabled, the optimizer co-optimizes the plant and the battery.
 
 - **Energy capacity (MWh)** and **Power (MW)**: battery size and charge/discharge limits.
 - **Round-trip efficiency (%)**: overall efficiency (or split efficiency if configured).
-- **Max SOC (%)**: maximum allowed state-of-charge relative to capacity.
-- **Min SOC (%)**: minimum allowed state-of-charge.
+- **Max SOC (%)** and **Min SOC (%)**: state-of-charge bounds.
 - **SOC initial / final (%)**: optional targets for the first and/or last interval.
 - **Price deadband (%)**: ignore arbitrage opportunities smaller than this percentage difference to reduce churn.
   - Example: deadband = 2% → tiny price swings won’t trigger charge/discharge.
@@ -62,7 +61,7 @@ If integer variables are enabled (e.g., on/off status), the problem is MILP; oth
 - **Battery operation**: charge/discharge and SOC (if enabled)
 - **KPIs**: total profit, energy bought/sold, operating hours, starts/stops
 - **Charts**: prices vs. dispatch; SOC trajectory
-- **Download**: CSV of results when enabled
+- **Download**: CSV of results (when enabled)
 
 ---
 
@@ -91,10 +90,10 @@ If you see “Coming soon,” it means the feature is intentionally not yet enab
 
 ---
 
-**Need more?** Ping us which field is unclear and we’ll add a one-liner right here so your team has it in-app.
+**Need more?** Tell me which field is unclear and I’ll add a one-liner here so your team has it in-app.
 """
 
-def render_help_button(location: str = "main"):
+def render_help_button(location: str = "main") -> None:
     """
     Renders a button that toggles a full 'How this app works' panel.
 
