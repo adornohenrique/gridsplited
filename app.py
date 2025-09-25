@@ -27,7 +27,7 @@ render_help_button("main")
 def sidebar() -> SimpleNamespace:
     with st.sidebar:
         st.markdown("### Controls")
-        render_help_button("sidebar")
+        
 
         st.markdown("#### 1) Price file")
         uploaded = st.file_uploader(
