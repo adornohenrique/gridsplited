@@ -2,7 +2,8 @@
 import streamlit as st
 import pandas as pd
 
-from core import ui, io, economics, optimizer, constants, show_help_panel
+from core import ui, io, economics, optimizer, constants
+from core.help import show_help_panel
 from core.battery import BatteryParams, simulate_price_band
 
 st.set_page_config(page_title="Dispatch Optimizer", layout="wide")
