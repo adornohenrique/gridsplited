@@ -1,10 +1,12 @@
 # core/__init__.py
 """
-Core package exports.
+Lightweight package initializer to avoid circular imports.
 
-We expose render_help_button() so the app can show the
-“How this app works” panel anywhere (main page or sidebar).
+Only export UI helpers that the top-level app needs.
+Submodules (io, optimizer, matrix, etc.) are imported directly
+by consumers, e.g. `import core.io as io`.
 """
 
-from . import io, economics, optimizer, constants, battery, matrix, portfolio, tolling
-from .help import render_help_button  # <-- used by app.py
+from .help import render_help_button
+
+__all__ = ["render_help_button"]
