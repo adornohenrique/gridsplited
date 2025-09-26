@@ -1,4 +1,4 @@
-# core/report.py
+# report.py
 from io import BytesIO
 import pandas as pd
 
