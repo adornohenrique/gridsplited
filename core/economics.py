@@ -20,12 +20,11 @@ def compute_kpis(
     tons = (total_mwh / mwh_per_ton) if mwh_per_ton > 0 else 0.0
 
     revenue_meoh = tons * meoh_price_eur_per_ton
-    power_cost = (disp["price"] * disp["mwh"]).sum()
-    co2_cost = tons * co2_t_per_ton_meoh * co2_price_eur_per_ton
-    overheads = revenue_meoh * (maint_pct + sga_pct + ins_pct) / 100.0
-    other_opex = tons * (water_cost_eur_per_ton + other_opex_eur_per_ton)
-    ebitda_full = revenue_meoh - power_cost - co2_cost - overheads - other_opex
-
+    power_cost   = float((disp["price"] * disp["mwh"]).sum())
+    co2_cost     = tons * co2_t_per_ton_meoh * co2_price_eur_per_ton
+    overheads    = revenue_meoh * (maint_pct + sga_pct + ins_pct) / 100.0
+    other_opex   = tons * (water_cost_eur_per_ton + other_opex_eur_per_ton)
+    ebitda_full  = revenue_meoh - power_cost - co2_cost - overheads - other_opex
     profit_proxy = float(disp["proxy_profit_eur"].sum())
 
     return {
@@ -33,7 +32,7 @@ def compute_kpis(
         "avg_price": avg_price,
         "total_tons": tons,
         "revenue_meoh": revenue_meoh,
-        "power_cost": float(power_cost),
+        "power_cost": power_cost,
         "co2_cost": co2_cost,
         "overheads": overheads,
         "other_opex": other_opex,
