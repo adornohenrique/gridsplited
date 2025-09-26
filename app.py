@@ -71,8 +71,10 @@ with st.sidebar:
 
 # ---- Cached loaders ----
 @st.cache_data(show_spinner=False)
-def parse_prices(file) -> pd.DataFrame:
-    return io.load_prices(file)
+def load_and_align(file):
+    raw = io.load_prices(file)
+    aligned = io.ensure_quarter_hour(raw, method="pad", expand_edges=True)
+    return raw, aligned
 
 @st.cache_data(show_spinner=False)
 def ensure_qh(df: pd.DataFrame) -> pd.DataFrame:
@@ -95,10 +97,11 @@ if uploaded:
         st.error(f"Failed to load prices: {e}")
 
 with tabs[0]:
-    st.subheader("Price data (first 96 rows)")
+    st.subheader("Price data — preview (first 96 rows)")
     if df_prices is None:
         st.info("Upload a file to see data.")
     else:
+        st.caption(f"Full dataset length: {len(df_prices):,} rows at 15-min cadence.")
         st.dataframe(df_prices.head(96), use_container_width=True)
 
 with tabs[1]:
