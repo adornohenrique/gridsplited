@@ -160,7 +160,7 @@ if uploaded:
         issues = io.sanity_checks(df_prices)
         if issues:
             ui.show_data_quality(issues)
-        st.sidebar.success(f"Rows loaded: raw={len(df_raw):,} → aligned(qh)={len(df_prices):,}")
+        ui.show_row_counts(len(df_raw), len(df_prices))
     except Exception as e:
         st.error(f"Failed to load prices: {e}")
 
