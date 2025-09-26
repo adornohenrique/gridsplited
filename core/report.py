@@ -16,13 +16,13 @@ def _safe_df(obj) -> pd.DataFrame:
 
 def _prep_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     """Make sure Excel can write it: drop tz info, stringify categoricals."""
-    if df is None or len(df.columns) == 0:
+    if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
     for c in out.columns:
         s = out[c]
-        # Drop timezone (Excel doesn't support tz-aware datetimes)
         if is_datetime64tz_dtype(s):
+            # Excel can't handle tz-aware; convert to naive UTC
             out[c] = s.dt.tz_convert("UTC").dt.tz_localize(None)
         elif is_categorical_dtype(s):
             out[c] = s.astype(str)
@@ -35,10 +35,9 @@ def build_report(prices_aligned,
     prices_aligned = _prep_for_excel(_safe_df(prices_aligned))
     dispatch_df    = _prep_for_excel(_safe_df(dispatch_df))
     battery_df     = _prep_for_excel(_safe_df(battery_df))
-    kpis_df        = _safe_df(kpis)
-    if not kpis_df.empty:
-        # flatten nested dicts if any
-        kpis_df = pd.json_normalize(kpis).astype(object)
+
+    # KPIs (dict) -> single-row DataFrame
+    kpis_df = pd.DataFrame([kpis]) if isinstance(kpis, dict) and len(kpis) else pd.DataFrame()
 
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
@@ -49,11 +48,10 @@ def build_report(prices_aligned,
             kpis_df.to_excel(xw, sheet_name="KPIs", index=False)
         if not battery_df.empty:
             battery_df.to_excel(xw, sheet_name="Battery", index=False)
-
         pd.DataFrame({"Info":[
             "All steps are 15-minute intervals.",
             "Prices aligned to quarter-hours (edges expanded, gaps filled).",
-            "Dispatch uses parameters set at run time."
+            "Dispatch uses parameters set at run time.",
         ]}).to_excel(xw, sheet_name="README", index=False)
 
     bio.seek(0)
