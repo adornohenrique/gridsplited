@@ -5,11 +5,46 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from core import ui, io, optimizer, economics, battery, report
+# ---------- Robust imports: works whether modules are in "core/" or project root ----------
+try:
+    from core import ui, io, optimizer, economics, battery, report  # preferred
+except Exception:
+    # Fallback to root-level modules (ui.py, io.py, etc.)
+    import importlib, sys, pathlib
+    sys.path.append(str(pathlib.Path(__file__).parent))
+    ui         = importlib.import_module("ui")
+    io         = importlib.import_module("io")
+    optimizer  = importlib.import_module("optimizer")
+    economics  = importlib.import_module("economics")
+    battery    = importlib.import_module("battery")
+    try:
+        report = importlib.import_module("report")
+    except Exception:
+        # Minimal inline report if report.py is missing
+        from io import BytesIO
+        def _inline_build_report(prices_aligned, dispatch_df=None, kpis=None, battery_df=None) -> bytes:
+            bio = BytesIO()
+            with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
+                (prices_aligned or pd.DataFrame()).to_excel(xw, sheet_name="Prices", index=False)
+                if dispatch_df is not None and not dispatch_df.empty:
+                    dispatch_df.to_excel(xw, sheet_name="Dispatch", index=False)
+                if kpis:
+                    pd.DataFrame([kpis]).to_excel(xw, sheet_name="KPIs", index=False)
+                if battery_df is not None and not battery_df.empty:
+                    battery_df.to_excel(xw, sheet_name="Battery", index=False)
+                pd.DataFrame({"Info":[
+                    "All steps are 15-minute intervals.",
+                    "Prices aligned to quarter-hours (edges expanded, gaps filled).",
+                    "Dispatch uses parameters set at run time.",
+                ]}).to_excel(xw, sheet_name="README", index=False)
+            bio.seek(0)
+            return bio.getvalue()
+        class report:  # shim
+            build_report = staticmethod(_inline_build_report)
 
+# ---------- App config ----------
 st.set_page_config(page_title="Quarter-hour Dispatch Optimizer", layout="wide")
 
-# ---------------- Config ----------------
 @st.cache_data(show_spinner=False)
 def load_config(path: str = "config.yaml") -> dict:
     if not os.path.exists(path):
@@ -22,12 +57,12 @@ D    = (CFG.get("defaults") or {})
 BDEF = (CFG.get("battery_defaults") or {})
 UI_C = (CFG.get("ui") or {})
 
-# ---------------- Header ----------------
+# ---------- Header ----------
 ui.display_logo(UI_C.get("logo", "logo.png"))
 st.title("Quarter-hour Dispatch Optimizer (Profit-Max)")
 ui.how_it_works_expander()
 
-# ---------------- Sidebar ----------------
+# ---------- Sidebar ----------
 with st.sidebar:
     st.markdown("### Controls")
 
@@ -38,46 +73,46 @@ with st.sidebar:
     )
 
     st.markdown("#### 2) Plant parameters")
-    cap      = st.number_input("Plant capacity (MW)", 0.0, 1_000_000.0, float(D.get("PLANT_CAP_MW", 20.0)), 0.1)
-    min_pct  = st.number_input("Min load (% of cap)", 0.0, 100.0, float(D.get("MIN_LOAD_PCT", 10.0)), 1.0)
-    max_pct  = st.number_input("Max load (% of cap)", 0.0, 100.0, float(D.get("MAX_LOAD_PCT", 100.0)), 1.0)
-    be       = st.number_input("Break-even (€/MWh)", -10_000.0, 10_000.0, float(D.get("BREAK_EVEN_EUR_MWH", 50.0)), 1.0)
-    ramp     = st.number_input("Ramp limit per 15-min (MW)", 0.0, 1_000_000.0, float(D.get("RAMP_LIMIT_MW", 2.0)), 0.1)
+    cap       = st.number_input("Plant capacity (MW)", 0.0, 1_000_000.0, float(D.get("PLANT_CAP_MW", 20.0)), 0.1)
+    min_pct   = st.number_input("Min load (% of cap)", 0.0, 100.0, float(D.get("MIN_LOAD_PCT", 10.0)), 1.0)
+    max_pct   = st.number_input("Max load (% of cap)", 0.0, 100.0, float(D.get("MAX_LOAD_PCT", 100.0)), 1.0)
+    be        = st.number_input("Break-even (€/MWh)", -10_000.0, 10_000.0, float(D.get("BREAK_EVEN_EUR_MWH", 50.0)), 1.0)
+    ramp      = st.number_input("Ramp limit per 15-min (MW)", 0.0, 1_000_000.0, float(D.get("RAMP_LIMIT_MW", 2.0)), 0.1)
     always_on = st.toggle("Always keep ≥ Min load", value=bool(D.get("ALWAYS_ON", True)))
 
     st.markdown("#### 3) Economics (MeOH)")
-    mwh_per_ton  = st.number_input("MWh per ton MeOH", 0.0, 100_000.0, float(D.get("MWH_PER_TON", 11.0)), 0.1)
-    meoh_price   = st.number_input("MeOH price (€/t)", 0.0, 1_000_000.0, float(D.get("MEOH_PRICE", 1000.0)), 1.0)
-    co2_price    = st.number_input("CO₂ price (€/t)", 0.0, 1_000_000.0, float(D.get("CO2_PRICE", 40.0)), 1.0)
-    co2_intensity= st.number_input("CO₂ intensity (t/t MeOH)", 0.0, 1000.0, float(D.get("CO2_INTENSITY", 1.375)), 0.001)
-    maint_pct    = st.number_input("Maintenance (% revenue)", 0.0, 100.0, float(D.get("MAINT_PCT", 3.0)), 0.1)
-    sga_pct      = st.number_input("SG&A (% revenue)", 0.0, 100.0, float(D.get("SGA_PCT", 2.0)), 0.1)
-    ins_pct      = st.number_input("Insurance (% revenue)", 0.0, 100.0, float(D.get("INS_PCT", 1.0)), 0.1)
-    water_cost_t = st.number_input("Water cost (€/t MeOH)", 0.0, 1_000_000.0, float(D.get("WATER_COST_T", 7.3)), 0.1)
-    other_opex_t = st.number_input("Other OPEX (€/t MeOH)", 0.0, 1_000_000.0, float(D.get("OTHER_OPEX_T", 0.0)), 0.1)
+    mwh_per_ton   = st.number_input("MWh per ton MeOH", 0.0, 100_000.0, float(D.get("MWH_PER_TON", 11.0)), 0.1)
+    meoh_price    = st.number_input("MeOH price (€/t)", 0.0, 1_000_000.0, float(D.get("MEOH_PRICE", 1000.0)), 1.0)
+    co2_price     = st.number_input("CO₂ price (€/t)", 0.0, 1_000_000.0, float(D.get("CO2_PRICE", 40.0)), 1.0)
+    co2_intensity = st.number_input("CO₂ intensity (t/t MeOH)", 0.0, 1000.0, float(D.get("CO2_INTENSITY", 1.375)), 0.001)
+    maint_pct     = st.number_input("Maintenance (% revenue)", 0.0, 100.0, float(D.get("MAINT_PCT", 3.0)), 0.1)
+    sga_pct       = st.number_input("SG&A (% revenue)", 0.0, 100.0, float(D.get("SGA_PCT", 2.0)), 0.1)
+    ins_pct       = st.number_input("Insurance (% revenue)", 0.0, 100.0, float(D.get("INS_PCT", 1.0)), 0.1)
+    water_cost_t  = st.number_input("Water cost (€/t MeOH)", 0.0, 1_000_000.0, float(D.get("WATER_COST_T", 7.3)), 0.1)
+    other_opex_t  = st.number_input("Other OPEX (€/t MeOH)", 0.0, 1_000_000.0, float(D.get("OTHER_OPEX_T", 0.0)), 0.1)
 
     st.markdown("#### 4) Battery (optional)")
     use_batt = st.toggle("Enable battery", value=bool(BDEF.get("enabled", False)))
     if use_batt:
-        e_mwh  = st.number_input("Energy capacity (MWh)", 0.0, 1_000_000.0, float(BDEF.get("e_mwh", 10.0)), 0.1)
-        p_ch   = st.number_input("Charge power limit (MW)", 0.0, 1_000_000.0, float(BDEF.get("p_ch_mw", 5.0)), 0.1)
-        p_dis  = st.number_input("Discharge power limit (MW)", 0.0, 1_000_000.0, float(BDEF.get("p_dis_mw", 5.0)), 0.1)
-        eff_ch = st.number_input("Charge efficiency (0–1)", 0.0, 1.0, float(BDEF.get("eff_ch", 0.95)), 0.01)
-        eff_dis= st.number_input("Discharge efficiency (0–1)", 0.0, 1.0, float(BDEF.get("eff_dis", 0.95)), 0.01)
-        soc_min= st.number_input("SOC min (0–1)", 0.0, 1.0, float(BDEF.get("soc_min", 0.10)), 0.01)
-        soc_max= st.number_input("SOC max (0–1)", 0.0, 1.0, float(BDEF.get("soc_max", 0.90)), 0.01)
+        e_mwh    = st.number_input("Energy capacity (MWh)", 0.0, 1_000_000.0, float(BDEF.get("e_mwh", 10.0)), 0.1)
+        p_ch     = st.number_input("Charge power limit (MW)", 0.0, 1_000_000.0, float(BDEF.get("p_ch_mw", 5.0)), 0.1)
+        p_dis    = st.number_input("Discharge power limit (MW)", 0.0, 1_000_000.0, float(BDEF.get("p_dis_mw", 5.0)), 0.1)
+        eff_ch   = st.number_input("Charge efficiency (0–1)", 0.0, 1.0, float(BDEF.get("eff_ch", 0.95)), 0.01)
+        eff_dis  = st.number_input("Discharge efficiency (0–1)", 0.0, 1.0, float(BDEF.get("eff_dis", 0.95)), 0.01)
+        soc_min  = st.number_input("SOC min (0–1)", 0.0, 1.0, float(BDEF.get("soc_min", 0.10)), 0.01)
+        soc_max  = st.number_input("SOC max (0–1)", 0.0, 1.0, float(BDEF.get("soc_max", 0.90)), 0.01)
         price_low  = st.number_input("Price to charge ≤ (€/MWh)", -10_000.0, 10_000.0, float(BDEF.get("price_low", 30.0)), 1.0)
         price_high = st.number_input("Price to discharge ≥ (€/MWh)", -10_000.0, 10_000.0, float(BDEF.get("price_high", 90.0)), 1.0)
-        degr  = st.number_input("Degradation (€/MWh throughput)", 0.0, 10_000.0, float(BDEF.get("degradation_eur_per_mwh", 0.0)), 0.1)
+        degr     = st.number_input("Degradation (€/MWh throughput)", 0.0, 10_000.0, float(BDEF.get("degradation_eur_per_mwh", 0.0)), 0.1)
 
-# ---------------- Cache: load + align ----------------
+# ---------- Cache: load + align ----------
 @st.cache_data(show_spinner=False)
 def load_and_align(file):
     raw = io.load_prices(file)
     aligned = io.ensure_quarter_hour(raw, method="pad", expand_edges=True)
     return raw, aligned
 
-# ---------------- Tabs ----------------
+# ---------- Tabs ----------
 tabs = st.tabs(["Data", "Dispatch", "Economics", "Battery", "Matrix & Portfolio"])
 
 df_raw = df_prices = None
@@ -195,7 +230,7 @@ with tabs[4]:
     st.subheader("Matrix & Portfolio")
     st.info("Coming soon: batch scenarios & portfolio view.")
 
-# ---------------- Sidebar: Excel report ----------------
+# ---------- Sidebar: Excel report ----------
 if st.session_state.get("prices_aligned") is not None:
     report_bytes = report.build_report(
         prices_aligned=st.session_state.get("prices_aligned"),
