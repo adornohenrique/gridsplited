@@ -159,7 +159,7 @@ if uploaded:
         df_raw, df_prices = load_and_align(uploaded)
         issues = io.sanity_checks(df_prices)
         if issues:
-            st.sidebar.warning(f"Data quality notes: {issues}")
+            ui.show_data_quality(issues)
         st.sidebar.success(f"Rows loaded: raw={len(df_raw):,} → aligned(qh)={len(df_prices):,}")
     except Exception as e:
         st.error(f"Failed to load prices: {e}")
