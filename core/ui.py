@@ -41,5 +41,23 @@ def show_kpis(kpis: dict):
     c[1].metric("Other OPEX", f"€{kpis['other_opex']:,.0f}")
     c[2].metric("EBITDA (full)", f"€{kpis['ebitda_full']:,.0f}")
 
+    # ---- Sidebar helpers ----
+import streamlit as st
+
+def show_data_quality(issues: dict):
+    """Pretty sidebar warning for data quality."""
+    if not issues:
+        return
+    bullets = []
+    if "irregular_cadence" in issues:
+        bullets.append(f"• Irregular cadence steps: **{issues['irregular_cadence']:,}**")
+    if "price_outliers" in issues:
+        bullets.append(f"• Price outliers: **{issues['price_outliers']:,}**")
+    st.sidebar.warning("**Data quality**\n\n" + "\n".join(bullets))
+
+def show_row_counts(raw_rows: int, aligned_rows: int):
+    """Pretty sidebar success for row counts."""
+    st.sidebar.success(f"**Rows loaded**\n\nraw: **{raw_rows:,}** → aligned (15-min): **{aligned_rows:,}**")
+
     st.markdown("#### Proxy profit (power only)")
     st.metric("Σ[(Price − Break-even) × MWh]", f"€{kpis['profit_proxy']:,.0f}")
