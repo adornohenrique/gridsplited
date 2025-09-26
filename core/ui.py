@@ -42,7 +42,6 @@ def show_kpis(kpis: dict):
     c[2].metric("EBITDA (full)", f"€{kpis['ebitda_full']:,.0f}")
 
     # ---- Sidebar helpers ----
-import streamlit as st
 
 def show_data_quality(issues: dict):
     """Pretty sidebar warning for data quality."""
