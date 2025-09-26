@@ -121,18 +121,27 @@ def load_prices(file_or_path) -> pd.DataFrame:
     out = out.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
     return out
 
-def ensure_quarter_hour(df: pd.DataFrame, method: str = "pad") -> pd.DataFrame:
+# core/io.py (replace the existing ensure_quarter_hour)
+def ensure_quarter_hour(df: pd.DataFrame, method: str = "pad", expand_edges: bool = True) -> pd.DataFrame:
     df = df.copy().set_index("timestamp")
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
-    start = df.index.min().ceil("15min")
-    end = df.index.max().floor("15min")
+
+    if expand_edges:
+        start = df.index.min().floor("15min")
+        end   = df.index.max().ceil("15min")
+    else:
+        start = df.index.min().ceil("15min")
+        end   = df.index.max().floor("15min")
+
     idx = pd.date_range(start, end, freq="15min", tz=df.index.tz)
     df = df.reindex(idx)
+
     if method == "linear":
         df["price"] = df["price"].interpolate(method="time", limit_direction="both")
     else:
         df["price"] = df["price"].ffill().bfill()
+
     return df.reset_index(names="timestamp")
 
 def sanity_checks(df: pd.DataFrame, price_max_reasonable: float = 1000) -> dict:
