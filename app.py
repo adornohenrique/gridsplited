@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from core import ui, io, optimizer, economics, battery
+from core import ui, io, optimizer, economics, battery, report
 
 st.set_page_config(page_title="Dispatch Optimizer", layout="wide")
 
