@@ -287,10 +287,39 @@ df_raw = df_prices = None
 if uploaded:
     try:
         df_raw, df_prices = load_and_align(uploaded)
+
+        # --- Normalize price: €/MW per 15-min slot  ->  €/MWh (×4) ---
+        def _detect_price_col(df: pd.DataFrame) -> str:
+            for c in ["price", "Price", "price_eur_mwh", "Price_EUR_MWh"]:
+                if c in df.columns:
+                    return c
+            lowers = {c.lower(): c for c in df.columns}
+            for c in ["price", "price_eur_mwh"]:
+                if c in lowers:
+                    return lowers[c]
+            raise ValueError("No price column found. Expected 'price' or similar.")
+
+        pcol = _detect_price_col(df_prices)
+
+        # Keep the original values for auditing
+        if "price_raw" not in df_prices.columns:
+            df_prices.rename(columns={pcol: "price_raw"}, inplace=True)
+        else:
+            # If your loader already created price_raw, make sure we use it
+            if pcol != "price_raw":
+                # avoid duplicates: ensure price_raw holds the original numbers
+                df_prices.drop(columns=[c for c in [pcol] if c in df_prices.columns and c != "price_raw"], inplace=True)
+
+        # 15-min slot = 0.25 h  → €/MWh = €/MW-slot / 0.25  (i.e., ×4)
+        df_prices["price"] = df_prices["price_raw"] / 0.25
+        st.caption("Price normalized: €/MW per 15-min → €/MWh (×4). Using column 'price' downstream.")
+
+        # --- Now run your existing checks on the normalized data ---
         issues = io.sanity_checks(df_prices)
         if issues:
             ui.show_data_quality(issues)
         ui.show_row_counts(len(df_raw), len(df_prices))
+
     except Exception as e:
         st.error(f"Failed to load prices: {e}")
 
