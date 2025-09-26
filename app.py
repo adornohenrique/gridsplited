@@ -1,36 +1,62 @@
 # app.py
 import os
+import sys
 import yaml
 import numpy as np
 import pandas as pd
 import streamlit as st
+import importlib
+from pathlib import Path
 
-# ---------- Robust imports: works whether modules are in "core/" or project root ----------
-try:
-    from core import ui, io, optimizer, economics, battery, report  # preferred
-except Exception:
-    # Fallback to root-level modules (ui.py, io.py, etc.)
-    import importlib, sys, pathlib
-    sys.path.append(str(pathlib.Path(__file__).parent))
-    ui         = importlib.import_module("ui")
-    io         = importlib.import_module("io")
-    optimizer  = importlib.import_module("optimizer")
-    economics  = importlib.import_module("economics")
-    battery    = importlib.import_module("battery")
+# -------------------------------------------------------------------
+# Robust module import shim — works if your modules are in:
+#   - ./core/*.py                (next to app.py)
+#   - ../core/*.py               (one level up)
+#   - ./*.py or ../*.py          (no 'core' folder)
+# -------------------------------------------------------------------
+def _load_modules():
+    base = Path(__file__).resolve().parent
+    candidates = [
+        base / "core",
+        base,
+        base.parent / "core",
+        base.parent,
+    ]
+    # Put candidates at the FRONT of sys.path so imports resolve here first
+    for p in candidates:
+        p = str(p)
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    # Try as a proper package first
     try:
-        report = importlib.import_module("report")
+        from core import ui, io, optimizer, economics, battery, report  # type: ignore
+        return ui, io, optimizer, economics, battery, report
     except Exception:
-        # Minimal inline report if report.py is missing
+        pass
+
+    # Fallback: import root-level modules
+    mods = {}
+    missing = []
+    for name in ["ui", "io", "optimizer", "economics", "battery", "report"]:
+        try:
+            mods[name] = importlib.import_module(name)
+        except Exception:
+            mods[name] = None
+            missing.append(name)
+
+    # Inline minimal report if absent
+    if mods.get("report") is None:
         from io import BytesIO
         def _inline_build_report(prices_aligned, dispatch_df=None, kpis=None, battery_df=None) -> bytes:
             bio = BytesIO()
             with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
                 (prices_aligned or pd.DataFrame()).to_excel(xw, sheet_name="Prices", index=False)
-                if dispatch_df is not None and not dispatch_df.empty:
+                if dispatch_df is not None and not getattr(dispatch_df, "empty", True):
                     dispatch_df.to_excel(xw, sheet_name="Dispatch", index=False)
                 if kpis:
                     pd.DataFrame([kpis]).to_excel(xw, sheet_name="KPIs", index=False)
-                if battery_df is not None and not battery_df.empty:
+                if battery_df is not None and not getattr(battery_df, "empty", True):
                     battery_df.to_excel(xw, sheet_name="Battery", index=False)
                 pd.DataFrame({"Info":[
                     "All steps are 15-minute intervals.",
@@ -39,10 +65,24 @@ except Exception:
                 ]}).to_excel(xw, sheet_name="README", index=False)
             bio.seek(0)
             return bio.getvalue()
-        class report:  # shim
+        class _ReportShim:  # simple namespace
             build_report = staticmethod(_inline_build_report)
+        mods["report"] = _ReportShim()
 
-# ---------- App config ----------
+    # Ensure the required ones exist
+    for req in ["ui", "io", "optimizer", "economics", "battery"]:
+        if mods.get(req) is None:
+            raise ModuleNotFoundError(
+                f"Could not import '{req}'. Fix by EITHER:\n"
+                f"  1) Place your modules inside a folder named 'core' NEXT TO app.py and add core/__init__.py\n"
+                f"  2) Or place ui.py, io.py, optimizer.py, economics.py, battery.py next to app.py\n"
+                f"  3) Or if your modules are one level up, keep them in ../core and this shim will find them."
+            )
+    return mods["ui"], mods["io"], mods["optimizer"], mods["economics"], mods["battery"], mods["report"]
+
+ui, io, optimizer, economics, battery, report = _load_modules()
+# -------------------------------------------------------------------
+
 st.set_page_config(page_title="Quarter-hour Dispatch Optimizer", layout="wide")
 
 @st.cache_data(show_spinner=False)
@@ -52,7 +92,7 @@ def load_config(path: str = "config.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
-CFG = load_config()
+CFG  = load_config()
 D    = (CFG.get("defaults") or {})
 BDEF = (CFG.get("battery_defaults") or {})
 UI_C = (CFG.get("ui") or {})
@@ -105,14 +145,12 @@ with st.sidebar:
         price_high = st.number_input("Price to discharge ≥ (€/MWh)", -10_000.0, 10_000.0, float(BDEF.get("price_high", 90.0)), 1.0)
         degr     = st.number_input("Degradation (€/MWh throughput)", 0.0, 10_000.0, float(BDEF.get("degradation_eur_per_mwh", 0.0)), 0.1)
 
-# ---------- Cache: load + align ----------
 @st.cache_data(show_spinner=False)
 def load_and_align(file):
     raw = io.load_prices(file)
     aligned = io.ensure_quarter_hour(raw, method="pad", expand_edges=True)
     return raw, aligned
 
-# ---------- Tabs ----------
 tabs = st.tabs(["Data", "Dispatch", "Economics", "Battery", "Matrix & Portfolio"])
 
 df_raw = df_prices = None
