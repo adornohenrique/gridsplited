@@ -19,13 +19,12 @@ def run_battery_strategy(
     degradation_eur_per_mwh: float = 0.0,
     soc0: float | None = None,
 ) -> pd.DataFrame:
-    """Simple threshold strategy (not co-optimized with plant)."""
     ts = df_prices["timestamp"].to_numpy()
     price = df_prices["price"].to_numpy(dtype=float)
 
-    soc = np.empty_like(price, dtype=float)  # in MWh
-    ch = np.zeros_like(price, dtype=float)   # MW (grid -> battery)
-    dis = np.zeros_like(price, dtype=float)  # MW (battery -> grid)
+    soc = np.empty_like(price, dtype=float)  # MWh
+    ch  = np.zeros_like(price, dtype=float)  # MW (+grid->batt)
+    dis = np.zeros_like(price, dtype=float)  # MW (+batt->grid)
 
     e_lo = e_mwh * soc_min
     e_hi = e_mwh * soc_max
@@ -41,17 +40,15 @@ def run_battery_strategy(
             e -= (dis[i] / eff_dis) * DT_HOURS
             ch[i] = 0.0
         else:
-            ch[i] = 0.0
-            dis[i] = 0.0
+            ch[i] = 0.0; dis[i] = 0.0
         soc[i] = e
 
-    # Cashflow: pay for charge energy; receive for discharge energy; degradation on throughput
-    e_in = ch * DT_HOURS                # MWh from grid
-    e_out = dis * DT_HOURS              # MWh to grid
+    e_in  = ch * DT_HOURS
+    e_out = dis * DT_HOURS
     throughput = e_in + e_out
-    revenue = (price * e_out).sum()
-    cost = (price * e_in).sum() + degradation_eur_per_mwh * throughput.sum()
-    pnl = revenue - cost
+    revenue = float((price * e_out).sum())
+    cost    = float((price * e_in).sum() + degradation_eur_per_mwh * throughput.sum())
+    pnl     = revenue - cost
 
     df = pd.DataFrame({
         "timestamp": ts,
@@ -62,5 +59,5 @@ def run_battery_strategy(
         "e_in_mwh": e_in,
         "e_out_mwh": e_out,
     })
-    df.attrs["battery_summary"] = {"revenue": float(revenue), "cost": float(cost), "pnl": float(pnl)}
+    df.attrs["battery_summary"] = {"revenue": revenue, "cost": cost, "pnl": pnl}
     return df
