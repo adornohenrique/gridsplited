@@ -5,3 +5,4 @@ plotly
 PyYAML
 pulp
 xlsxwriter
+openpyxl>=3.1
