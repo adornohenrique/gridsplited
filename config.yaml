@@ -15,7 +15,6 @@ defaults:
   INS_PCT: 1.0
   WATER_COST_T: 7.3
   OTHER_OPEX_T: 0.0
-  TARGET_MARGIN_PCT: 30.0
 
 ui:
   logo: "logo.png"
