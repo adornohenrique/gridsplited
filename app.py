@@ -269,17 +269,21 @@ with tabs[4]:
     st.info("Coming soon: batch scenarios & portfolio view.")
 
 # ---------- Sidebar: Excel report ----------
-if st.session_state.get("prices_aligned") is not None:
-    report_bytes = report.build_report(
-        prices_aligned=st.session_state.get("prices_aligned"),
-        dispatch_df=st.session_state.get("dispatch_df"),
-        kpis=st.session_state.get("kpis"),
-        battery_df=st.session_state.get("battery_df"),
-    )
-    st.sidebar.download_button(
-        "Download Excel report",
-        data=report_bytes,
-        file_name="dispatch_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+prices_ready = st.session_state.get("prices_aligned")
+if isinstance(prices_ready, pd.DataFrame) and not prices_ready.empty:
+    try:
+        report_bytes = report.build_report(
+            prices_aligned=st.session_state.get("prices_aligned"),
+            dispatch_df=st.session_state.get("dispatch_df"),
+            kpis=st.session_state.get("kpis"),
+            battery_df=st.session_state.get("battery_df"),
+        )
+        st.sidebar.download_button(
+            "Download Excel report",
+            data=report_bytes,
+            file_name="dispatch_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.sidebar.error(f"Report build failed: {e}")
