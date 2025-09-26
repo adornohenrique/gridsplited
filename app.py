@@ -9,33 +9,24 @@ import importlib
 from pathlib import Path
 
 # -------------------------------------------------------------------
-# Robust module import shim — works if your modules are in:
-#   - ./core/*.py                (next to app.py)
-#   - ../core/*.py               (one level up)
-#   - ./*.py or ../*.py          (no 'core' folder)
+# Robust module import shim — finds your modules whether they live in
+# ./core, ../core, or next to app.py
 # -------------------------------------------------------------------
 def _load_modules():
     base = Path(__file__).resolve().parent
-    candidates = [
-        base / "core",
-        base,
-        base.parent / "core",
-        base.parent,
-    ]
-    # Put candidates at the FRONT of sys.path so imports resolve here first
+    candidates = [base / "core", base, base.parent / "core", base.parent]
     for p in candidates:
-        p = str(p)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+        sp = str(p)
+        if sp not in sys.path:
+            sys.path.insert(0, sp)
 
-    # Try as a proper package first
+    # Try as a package
     try:
         from core import ui, io, optimizer, economics, battery, report  # type: ignore
         return ui, io, optimizer, economics, battery, report
     except Exception:
         pass
 
-    # Fallback: import root-level modules
     mods = {}
     missing = []
     for name in ["ui", "io", "optimizer", "economics", "battery", "report"]:
@@ -45,7 +36,7 @@ def _load_modules():
             mods[name] = None
             missing.append(name)
 
-    # Inline minimal report if absent
+    # Inline minimal report if no report module
     if mods.get("report") is None:
         from io import BytesIO
         def _inline_build_report(prices_aligned, dispatch_df=None, kpis=None, battery_df=None) -> bytes:
@@ -59,36 +50,31 @@ def _load_modules():
                 if battery_df is not None and not getattr(battery_df, "empty", True):
                     battery_df.to_excel(xw, sheet_name="Battery", index=False)
                 pd.DataFrame({"Info":[
-                    "All steps are 15-minute intervals.",
-                    "Prices aligned to quarter-hours (edges expanded, gaps filled).",
-                    "Dispatch uses parameters set at run time.",
+                    "Intervals are quarter-hour unless you changed them.",
+                    "Dispatch uses the flipped logic you configured.",
                 ]}).to_excel(xw, sheet_name="README", index=False)
             bio.seek(0)
             return bio.getvalue()
-        class _ReportShim:  # simple namespace
+        class _ReportShim:
             build_report = staticmethod(_inline_build_report)
         mods["report"] = _ReportShim()
 
-    # Ensure the required ones exist
     for req in ["ui", "io", "optimizer", "economics", "battery"]:
         if mods.get(req) is None:
             raise ModuleNotFoundError(
-                f"Could not import '{req}'. Fix by EITHER:\n"
-                f"  1) Place your modules inside a folder named 'core' NEXT TO app.py and add core/__init__.py\n"
-                f"  2) Or place ui.py, io.py, optimizer.py, economics.py, battery.py next to app.py\n"
-                f"  3) Or if your modules are one level up, keep them in ../core and this shim will find them."
+                f"Missing module '{req}'. Place your modules in a 'core' folder next to app.py, "
+                f"or next to this file, or in ../core."
             )
     return mods["ui"], mods["io"], mods["optimizer"], mods["economics"], mods["battery"], mods["report"]
 
 ui, io, optimizer, economics, battery, report = _load_modules()
 # -------------------------------------------------------------------
 
-# --------------------- Custom dispatch logic (inline) ---------------------
+# ---------------- Dispatch logic (inline, matches your requested rules) -----
 def _detect_price_col(df: pd.DataFrame) -> str:
     for c in ["price", "Price", "price_eur_mwh", "Price_EUR_MWh"]:
         if c in df.columns:
             return c
-    # try case-insensitive
     lowers = {c.lower(): c for c in df.columns}
     for c in ["price", "price_eur_mwh"]:
         if c in lowers:
@@ -107,17 +93,16 @@ def _dispatch_consumer(
     charge_at_low_price: bool = True,
 ) -> pd.DataFrame:
     """
-    Consumer plant (electrolyzer/eMeOH) rule:
-      - price < breakeven: run 100% capacity (optionally charge battery)
-      - price ≥ breakeven: run at must_run_frac*capacity and DISCHARGE battery to cover that min load
-    Battery only offsets grid import; never exports.
+    Consumer plant rule set:
+      - price < breakeven -> plant at 100% (optionally charge battery)
+      - price >= breakeven -> plant at must_run_frac*capacity and DISCHARGE battery to cover min load
+    Battery offsets grid import only; no export.
     """
     price_col = _detect_price_col(df_prices)
     df = df_prices.copy()
     price = df[price_col].to_numpy(dtype=float)
     n = len(df)
 
-    # Target plant load per rule
     plant_target_mw = np.where(price < breakeven_eur_per_mwh, capacity_mw, must_run_frac * capacity_mw)
 
     # Battery params
@@ -134,18 +119,16 @@ def _dispatch_consumer(
             soc_max_frac=float(battery_kwargs.get("soc_max_frac", 0.90)),
             soc0_frac=float(battery_kwargs.get("soc0_frac", 0.50)),
         )
-        # clamp
         bat["soc_min_frac"] = max(0.0, min(1.0, bat["soc_min_frac"]))
         bat["soc_max_frac"] = max(0.0, min(1.0, bat["soc_max_frac"]))
         if bat["soc0_frac"] < bat["soc_min_frac"] or bat["soc0_frac"] > bat["soc_max_frac"]:
             bat["soc0_frac"] = 0.5 * (bat["soc_min_frac"] + bat["soc_max_frac"])
 
-    # Arrays
-    bat_ch_mw   = np.zeros(n)
-    bat_dis_mw  = np.zeros(n)
-    bat_ch_mwh  = np.zeros(n)
+    bat_ch_mw = np.zeros(n)
+    bat_dis_mw = np.zeros(n)
+    bat_ch_mwh = np.zeros(n)
     bat_dis_mwh = np.zeros(n)
-    soc_mwh     = np.zeros(n)
+    soc_mwh = np.zeros(n)
     grid_import_mw = np.zeros(n)
 
     if bat is not None and bat["e_mwh"] > 0:
@@ -160,11 +143,10 @@ def _dispatch_consumer(
     else:
         E = Pch = Pds = etac = etad = soc_min = soc_max = 0.0
         soc = np.nan
-        bat = None  # treat as disabled
+        bat = None
 
-    # Loop over time steps
     for t in range(n):
-        p = price[t]
+        p = float(price[t])
         load_mw = float(plant_target_mw[t])
         ch_mw = 0.0
         dis_mw = 0.0
@@ -172,8 +154,10 @@ def _dispatch_consumer(
         if bat is not None:
             room_mwh  = max(soc_max - soc, 0.0)
             avail_mwh = max(soc - soc_min, 0.0)
+
             if p < breakeven_eur_per_mwh:
-                if charge_at_low_price and room_mwh > 1e-12:
+                # Cheap power: full production + optional charging
+                if (room_mwh > 1e-12) and (charge_at_low_price):
                     max_ch_mwh   = etac * Pch * dt_hours
                     allow_ch_mwh = min(max_ch_mwh, room_mwh)
                     ch_mw = (allow_ch_mwh / etac) / dt_hours if allow_ch_mwh > 0 else 0.0
@@ -181,10 +165,11 @@ def _dispatch_consumer(
                         max_extra = max(import_cap_mw - load_mw, 0.0)
                         ch_mw = min(ch_mw, max_extra)
             else:
-                if avail_mwh > 1e-12 and load_mw > 0:
+                # Expensive power: min load + discharge to cover that min load
+                if (avail_mwh > 1e-12) and (load_mw > 0):
                     max_dis_mwh   = Pds * dt_hours / etad
                     allow_dis_mwh = min(max_dis_mwh, avail_mwh)
-                    dis_mw = min((allow_dis_mwh * etad) / dt_hours, load_mw)  # no export
+                    dis_mw = min((allow_dis_mwh * etad) / dt_hours, load_mw)  # do not export
 
         gi_mw = load_mw + ch_mw - dis_mw
         if import_cap_mw is not None and gi_mw > import_cap_mw:
@@ -196,9 +181,9 @@ def _dispatch_consumer(
                 gi_mw = import_cap_mw
 
         grid_import_mw[t] = max(gi_mw, 0.0)
-        bat_ch_mw[t]   = ch_mw
-        bat_dis_mw[t]  = dis_mw
-        bat_ch_mwh[t]  = ch_mw * dt_hours
+        bat_ch_mw[t] = ch_mw
+        bat_dis_mw[t] = dis_mw
+        bat_ch_mwh[t] = ch_mw * dt_hours
         bat_dis_mwh[t] = dis_mw * dt_hours
 
         if bat is not None:
@@ -208,25 +193,23 @@ def _dispatch_consumer(
         else:
             soc_mwh[t] = np.nan
 
-    # Energy + costs
     mwh = plant_target_mw * dt_hours
     grid_import_mwh = grid_import_mw * dt_hours
-    energy_cost_eur = price * grid_import_mwh
-    batt_arb_eur    = price * (bat_dis_mwh - bat_ch_mwh)
-    net_energy_cost_eur = energy_cost_eur
+    energy_cost_eur = df[price_col] * grid_import_mwh
+    batt_arb_eur = df[price_col] * (bat_dis_mwh - bat_ch_mwh)
+    net_energy_cost_eur = energy_cost_eur  # what you pay to the grid
 
-    # Output
-    df["dispatch_mw"]      = plant_target_mw
-    df["mwh"]              = mwh
-    df["bat_ch_mw"]        = bat_ch_mw
-    df["bat_dis_mw"]       = bat_dis_mw
-    df["bat_ch_mwh"]       = bat_ch_mwh
-    df["bat_dis_mwh"]      = bat_dis_mwh
-    df["soc_mwh"]          = soc_mwh
-    df["grid_import_mw"]   = grid_import_mw
-    df["grid_import_mwh"]  = grid_import_mwh
-    df["energy_cost_eur"]  = energy_cost_eur
-    df["batt_arb_eur"]     = batt_arb_eur
+    df["dispatch_mw"] = plant_target_mw
+    df["mwh"] = mwh
+    df["bat_ch_mw"] = bat_ch_mw
+    df["bat_dis_mw"] = bat_dis_mw
+    df["bat_ch_mwh"] = bat_ch_mwh
+    df["bat_dis_mwh"] = bat_dis_mwh
+    df["soc_mwh"] = soc_mwh
+    df["grid_import_mw"] = grid_import_mw
+    df["grid_import_mwh"] = grid_import_mwh
+    df["energy_cost_eur"] = energy_cost_eur
+    df["batt_arb_eur"] = batt_arb_eur
     df["net_energy_cost_eur"] = net_energy_cost_eur
     return df
 # -------------------------------------------------------------------
@@ -289,7 +272,6 @@ with st.sidebar:
         eff_dis  = st.number_input("Discharge efficiency (0–1)", 0.0, 1.0, float(BDEF.get("eff_dis", 0.95)), 0.01)
         soc_min  = st.number_input("SOC min (0–1)", 0.0, 1.0, float(BDEF.get("soc_min", 0.10)), 0.01)
         soc_max  = st.number_input("SOC max (0–1)", 0.0, 1.0, float(BDEF.get("soc_max", 0.90)), 0.01)
-        # Initial SoC defaults mid-band
         st.caption("Initial SoC uses midpoint between min & max.")
 
 # ---------- Data loaders ----------
@@ -399,7 +381,13 @@ with tabs[2]:
             st.session_state["prices_aligned"] = df_prices
             st.session_state["dispatch_df"] = disp
             st.session_state["kpis"] = kpis
-            ui.show_kpis(kpis)
+
+            # Preferred UI renderer
+            try:
+                ui.show_kpis(kpis)
+            except Exception:
+                # Fallback: show as a neat table if your ui module expects another shape
+                st.dataframe(pd.DataFrame([kpis]).T.rename(columns={0: "value"}))
             st.success("Done.")
 
 with tabs[3]:
@@ -414,9 +402,9 @@ with tabs[3]:
                     e_mwh=e_mwh, p_ch_mw=p_ch, p_dis_mw=p_dis,
                     eff_ch=eff_ch, eff_dis=eff_dis,
                     soc_min=soc_min, soc_max=soc_max,
-                    price_low=ui.safe_number(BDEF.get("price_low", 30.0)),
-                    price_high=ui.safe_number(BDEF.get("price_high", 90.0)),
-                    degradation_eur_per_mwh=ui.safe_number(BDEF.get("degradation_eur_per_mwh", 0.0)),
+                    price_low=float((CFG.get("battery_defaults") or {}).get("price_low", 30.0)),
+                    price_high=float((CFG.get("battery_defaults") or {}).get("price_high", 90.0)),
+                    degradation_eur_per_mwh=float((CFG.get("battery_defaults") or {}).get("degradation_eur_per_mwh", 0.0)),
                 )
             st.session_state["prices_aligned"] = df_prices
             st.session_state["battery_df"]    = res
