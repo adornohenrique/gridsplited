@@ -43,8 +43,10 @@ def show_kpis(kpis: dict):
 
     # ---- Sidebar helpers ----
 
+# Pretty sidebar boxes
+import streamlit as st
+
 def show_data_quality(issues: dict):
-    """Pretty sidebar warning for data quality."""
     if not issues:
         return
     bullets = []
@@ -55,8 +57,4 @@ def show_data_quality(issues: dict):
     st.sidebar.warning("**Data quality**\n\n" + "\n".join(bullets))
 
 def show_row_counts(raw_rows: int, aligned_rows: int):
-    """Pretty sidebar success for row counts."""
     st.sidebar.success(f"**Rows loaded**\n\nraw: **{raw_rows:,}** → aligned (15-min): **{aligned_rows:,}**")
-
-    st.markdown("#### Proxy profit (power only)")
-    st.metric("Σ[(Price − Break-even) × MWh]", f"€{kpis['profit_proxy']:,.0f}")
