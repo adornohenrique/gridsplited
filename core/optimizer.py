@@ -29,7 +29,7 @@ def run_dispatch(
 
     pmin = plant_capacity_mw * min_load_pct / 100.0
     pmax = plant_capacity_mw * max_load_pct / 100.0
-    thr = break_even_eur_per_mwh
+    thr  = break_even_eur_per_mwh
 
     out = np.empty_like(price, dtype=float)
     prev = pmin if always_on else 0.0
